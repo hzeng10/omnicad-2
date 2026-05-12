@@ -254,6 +254,8 @@ class RunManager:
                 except PipelineError:
                     continue
                 sm = StateManager(run_state)
+                # Demote orphaned RUNNING tasks left by a previous crashed process.
+                sm.demote_orphans_sync()
                 abort_event = asyncio.Event()
                 sched = AsyncScheduler(spec, sm, self.workspace, abort_event, self._global_sem)
                 ctx = RunContext(

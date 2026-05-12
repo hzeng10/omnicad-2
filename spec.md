@@ -83,9 +83,9 @@
 ## 4. 关键设计约束 (Design Constraints)
 
 1.  **解耦**: 执行引擎不应感知具体的业务逻辑，仅负责任务的调度和数据传递。
-2.  **状态机模型**: 必须为 Pipeline、Step、Task 定义严谨的状态机（Pending, Running, Paused, Success, Failed, Skipped）。
+2.  **状态机模型**: 必须为 Pipeline、Step、Task 定义严谨的状态机（Pending, Running, Paused, Success, Failed, Skipped, Recovered）。状态迁移规则：仅允许合法的前置状态（如 `finish_task` 仅从 RUNNING 迁移，其余状态静默忽略），防止并发竞争导致的非法覆盖。
 3.  **线程/协程安全**: 确保 REPL 读取状态时，不会与后台写入状态产生竞态冲突。
-4.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。
+4.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。进程重启后，遗留在 RUNNING 状态的任务必须自动复位为 FAILED，以便 `resume` 重调度。
 5.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。
 6.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。
 

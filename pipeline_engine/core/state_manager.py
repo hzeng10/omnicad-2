@@ -118,6 +118,9 @@ class StateManager:
     ) -> None:
         async with self._lock:
             task = self._task(step_id, task_id)
+            # Guard: only transition from RUNNING; discard if task was paused/already terminal.
+            if task.status != Status.RUNNING:
+                return
             task.status = Status.SUCCESS
             task.progress = 100
             task.finished_at = _now()
@@ -138,6 +141,9 @@ class StateManager:
     ) -> None:
         async with self._lock:
             task = self._task(step_id, task_id)
+            # Guard: only RUNNING/PENDING tasks can fail; discard if already terminal or paused.
+            if task.status not in (Status.RUNNING, Status.PENDING):
+                return
             task.status = Status.FAILED
             task.finished_at = _now()
             task.error = error
@@ -158,6 +164,9 @@ class StateManager:
     ) -> None:
         async with self._lock:
             task = self._task(step_id, task_id)
+            # Guard: only update progress while task is still running.
+            if task.status != Status.RUNNING:
+                return
             task.progress = max(0, min(100, progress))
             self._persist()
 
@@ -201,6 +210,31 @@ class StateManager:
                 self._persist()
                 return True
             return False
+
+    def demote_orphans_sync(self) -> None:
+        """Reset any RUNNING tasks/steps/pipeline to FAILED (no-lock; safe to call during restore).
+
+        Called by restore_runs_from_disk before the RunContext is registered, so
+        no concurrent access is possible yet.
+        """
+        changed = False
+        for step in self._state.steps.values():
+            for task in step.tasks.values():
+                if task.status == Status.RUNNING:
+                    task.status = Status.FAILED
+                    task.error = "interrupted: process exited before completion"
+                    task.finished_at = _now()
+                    changed = True
+            if step.status == Status.RUNNING:
+                step.status = Status.FAILED
+                step.finished_at = _now()
+                changed = True
+        if self._state.status == Status.RUNNING:
+            self._state.status = Status.FAILED
+            self._state.finished_at = _now()
+            changed = True
+        if changed:
+            self._persist()
 
     # ─── helpers ──────────────────────────────────────────────────────────────
 

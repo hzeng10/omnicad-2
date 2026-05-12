@@ -161,7 +161,8 @@ steps:                             # 线性序列，按数组顺序执行
 ### 3.2 依赖语义（含失败补齐机制）
 
 - `depends_on: [task_id, ...]`：step 内任务级依赖。引擎读取上游 `output.json`，注入为 `inputs[task_id]`。
-- `depends_on_steps: [step_id, ...]`：跨 step 依赖。引擎聚合该 step 所有叶子任务的产出，注入为 `inputs[step_id] = {task_id: output, ...}`。
+- `depends_on_steps: [step_id, ...]`：跨 step 依赖。引擎聚合该 step 所有叶子任务的产出，注入为 `inputs[step_id] = {task_id: output, ...}`。  
+  **特例（skip=true 步骤）**：被跳过步骤没有任务产出文件，调度器改为直接读取 `<workspace>/manual_data/<step_id>/output.json` 的内容作为 `inputs[step_id]`，下游透明消费。
 - 同 step 内无 `depends_on` 的任务全部并行（受 `max_parallelism` 限流）。
 - **关键不变量：依赖就绪判定 = 上游 `output.json` 文件存在，与上游 status 字段无关**。这是 `fix --output` 跳过失败步骤的根基——output.json 被手动补齐后，下游即可消费。
 
@@ -346,6 +347,21 @@ class RunManager:
 - 持有 `PipelineRunState`，所有读写走 `async with self._lock:`；
 - 每次变更后立即调用 `storage.persist_state()`（原子写 `state.json`）；
 - 每个 run 一个实例，彼此隔离。
+
+**状态机非法迁移守卫**（V3.1 新增）：
+
+| 方法 | 允许的 from 状态 | 其他状态时的行为 |
+|---|---|---|
+| `finish_task` | RUNNING | 静默丢弃（task 已 PAUSED/RECOVERED/SUCCESS） |
+| `fail_task` | RUNNING、PENDING | 静默丢弃（终态或 PAUSED 任务不可被改写） |
+| `update_progress` | RUNNING | 静默丢弃（任务已停止/暂停时进度无意义） |
+| `recover_task` | 任意 | 始终允许（fix 可覆盖 FAILED/PAUSED/PENDING） |
+| `reset_for_resume` | FAILED（或 +PAUSED） | 仅允许声明的状态，其余无变化 |
+
+**孤儿 RUNNING 复位**（V3.1 新增）：
+
+`demote_orphans_sync()` 同步方法（无锁，调用时 RunContext 尚未注册故无并发）：  
+在 `restore_runs_from_disk` 加载旧 `state.json` 后立即调用，将残留的 RUNNING task / step / pipeline 全部置为 FAILED（`error="interrupted: process exited before completion"`），并原子写盘。这确保进程崩溃后的 `resume` 能正确重调度被中断的任务。
 
 ### 6.5 Storage（`core/storage.py`）
 

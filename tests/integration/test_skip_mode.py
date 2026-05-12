@@ -85,6 +85,43 @@ async def test_skip_step_missing_manual_data_raises(tmp_path):
         await sched.run()
 
 
+async def test_skipped_step_feeds_downstream(tmp_path):
+    """A2 fix: downstream task with depends_on_steps receives manual_data content."""
+    manual = {"config_key": "from_manual", "count": 7}
+    _write_manual_data(tmp_path, "s1", manual)
+
+    spec = PipelineSpec(
+        version="1.0",
+        pipeline=PipelineMeta(id="skip_feed_pipe", name="T"),
+        steps=[
+            StepSpec(id="s1", skip=True, tasks=[
+                TaskSpec(id="t1", plugin="tests.integration.test_scheduler.InstantTask"),
+            ]),
+            StepSpec(id="s2", tasks=[
+                TaskSpec(
+                    id="consumer",
+                    plugin=f"{__name__}.ConsumerTask",
+                    depends_on_steps=["s1"],
+                ),
+            ]),
+        ],
+    )
+    sched, sm = _make_scheduler(spec, tmp_path)
+    await sched.run()
+
+    from pipeline_engine.core import storage
+    run_state = await sm.get_run_state()
+    assert run_state.steps["s1"].status == Status.SKIPPED
+    assert run_state.steps["s2"].tasks["consumer"].status == Status.SUCCESS
+
+    # Consumer must have received the manual_data as inputs["s1"]
+    consumer_state = run_state.steps["s2"].tasks["consumer"]
+    task_dir = storage.get_task_dir(tmp_path, "skip_feed_pipe", "run1", "s2", "consumer")
+    output = storage.read_json(task_dir / "output.json")
+    # ConsumerTask returns {"received": inputs}, so inputs["s1"] == manual
+    assert output["received"].get("s1") == manual
+
+
 async def test_downstream_step_runs_after_skip(tmp_path):
     """The step after a skipped step runs normally."""
     _write_manual_data(tmp_path, "s1", {"value": 99})

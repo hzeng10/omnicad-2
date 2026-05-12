@@ -92,6 +92,7 @@ async def test_update_progress(sm):
 
 async def test_progress_clamped(sm):
     await sm.init_step("s1", ["t1"])
+    await sm.start_task("s1", "t1")   # must be RUNNING for update_progress to apply
     await sm.update_progress("s1", "t1", 999)
     ts = await sm.get_task_state("s1", "t1")
     assert ts.progress == 100

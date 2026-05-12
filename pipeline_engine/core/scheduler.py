@@ -242,8 +242,20 @@ class AsyncScheduler:
         return inputs
 
     def _collect_step_outputs(self, step_id: str) -> dict[str, Any]:
-        """Collect all leaf-task outputs from a completed step."""
+        """Collect outputs from a completed step.
+
+        For skip=true steps the manual_data dict is returned directly (no task
+        output files exist on disk).  For normal steps, leaf-task output.json
+        files are aggregated by task_id.
+        """
         dep_step_spec = self._get_step(step_id)
+
+        if dep_step_spec.skip:
+            try:
+                return storage.load_manual_data(self._workspace, step_id)
+            except PipelineError:
+                return {}
+
         import networkx as nx
         g = build_task_graph(dep_step_spec)
         # Leaf tasks: nodes with no outgoing edges
