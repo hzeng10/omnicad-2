@@ -15,37 +15,225 @@
 - **完善的状态机守卫** — `finish_task`/`fail_task`/`update_progress` 均内置非法迁移检查，防止并发竞争导致状态混乱
 - **90%+ 测试覆盖率** — 涵盖单元、集成、端到端三层
 
+---
+
 ## 快速开始
 
 ```bash
 pip install -e .
-
-# 校验 pipeline YAML 语法
-pipeline_cli lint examples/cad_pipeline/pipeline.yaml
-
-# 运行并等待完成
-pipeline_cli run cad_cost_estimation \
-  --workspace /tmp/demo \
-  --wait
-
-# 进入交互式 REPL
-pipeline_cli --workspace /tmp/demo
 ```
 
-## REPL 命令
+示例 pipeline 位于 `examples/cad_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
+
+---
+
+## 使用示例
+
+### 场景一：校验与注册
+
+```bash
+# 校验 YAML 语法与 DAG 合法性（不执行）
+$ pipeline_cli lint examples/cad_pipeline/pipeline.yaml
+OK — pipeline 'cad_cost_estimation' 校验通过。
+
+# 注册 pipeline 到本地 registry
+$ pipeline_cli load examples/cad_pipeline/pipeline.yaml --workspace /tmp/cad_demo
+Loaded: cad_cost_estimation
+
+# 列出已注册的 pipeline
+$ pipeline_cli list --workspace /tmp/cad_demo
+  cad_cost_estimation             CAD 设备成本汇总（示例）
+```
+
+### 场景二：运行完整 pipeline 并查看结果
+
+```bash
+# 运行并阻塞等待完成
+$ PIPELINE_DEMO_FAST=1 pipeline_cli run cad_cost_estimation --workspace /tmp/cad_demo --wait
+Started: 20260512T083056_948823_1b1fe2  (pipeline: cad_cost_estimation)
+  20260512T083056_948823_1b1fe2: success
+
+# 查看运行状态（支持跨进程：从磁盘恢复上次运行的状态）
+$ pipeline_cli status 20260512T083056_948823_1b1fe2 --workspace /tmp/cad_demo
+╭────────────────┬────────────────┬─────────┬──────────┬───────╮
+│ Step           │ Task           │ Status  │ Progress │ Error │
+├────────────────┼────────────────┼─────────┼──────────┼───────┤
+│ parse_dxf      │ read_dxf       │ success │     100% │       │
+│                │ parse_entities │ success │     100% │       │
+│ split_subgraph │ split          │ success │     100% │       │
+│ recognize      │ rec_building   │ success │     100% │       │
+│                │ rec_cable      │ success │     100% │       │
+│                │ rec_schematic  │ success │     100% │       │
+│ aggregate      │ merge          │ success │     100% │       │
+╰────────────────┴────────────────┴─────────┴──────────┴───────╯
+Pipeline 状态: success
+```
+
+### 场景三：inspect 查看 task 详情（输入 / 输出）
+
+`inspect` 显示指定 task 的完整输入输出 JSON、进度、错误堆栈。下例展示 `merge` 任务——它通过 `depends_on_steps: [recognize]` 自动聚合了3个并行识别任务的输出作为输入：
+
+```bash
+$ pipeline_cli inspect <run_id> --step aggregate --task merge --workspace /tmp/cad_demo
+
+─────────────────────────────── merge ────────────────────────────────
+状态    : success  进度 : 100%
+
+输入 (aggregate/merge/input.json):
+{
+  "recognize": {
+    "rec_building": {
+      "items": [
+        {"category": "building", "name": "Office Block A", "count": 3, "subgraph_id": "sg_0"},
+        {"category": "building", "name": "Warehouse B",    "count": 1, "subgraph_id": "sg_1"}
+      ]
+    },
+    "rec_cable": {
+      "items": [
+        {"category": "cable", "name": "YJV-4x16", "count": 42, "subgraph_id": "sg_2"},
+        {"category": "cable", "name": "YJV-3x10", "count": 18, "subgraph_id": "sg_3"}
+      ]
+    },
+    "rec_schematic": {
+      "items": [
+        {"category": "schematic", "name": "Panel-MCC1", "count": 2, "subgraph_id": "sg_0"},
+        {"category": "schematic", "name": "Panel-MCC2", "count": 1, "subgraph_id": "sg_1"}
+      ]
+    }
+  }
+}
+
+输出 (aggregate/merge/output.json):
+{
+  "summary": [
+    {"category": "building",   "name": "Office Block A", "total_count": 3,  "unit_price": 500000.0, "subtotal": 1500000.0},
+    {"category": "building",   "name": "Warehouse B",    "total_count": 1,  "unit_price": 200000.0, "subtotal":  200000.0},
+    {"category": "cable",      "name": "YJV-3x10",       "total_count": 18, "unit_price":     32.0, "subtotal":     576.0},
+    {"category": "cable",      "name": "YJV-4x16",       "total_count": 42, "unit_price":     45.0, "subtotal":    1890.0},
+    {"category": "schematic",  "name": "Panel-MCC1",     "total_count": 2,  "unit_price":  15000.0, "subtotal":   30000.0},
+    {"category": "schematic",  "name": "Panel-MCC2",     "total_count": 1,  "unit_price":  12000.0, "subtotal":   12000.0}
+  ],
+  "grand_total": 1744466.0
+}
+```
+
+### 场景四：任务失败 → fix 注入修复数据 → resume 恢复
+
+这是引擎的核心能力：单个任务失败后不必重跑整个 pipeline，只需注入修复数据再恢复即可。
+
+```bash
+# 1. 模拟 rec_cable 任务报错
+$ PIPELINE_DEMO_FAST=1 PIPELINE_DEMO_FAIL=rec_cable \
+  pipeline_cli run cad_cost_estimation --workspace /tmp/cad_demo2 --wait
+Started: 20260512T083200_497976_239806  (pipeline: cad_cost_estimation)
+Task recognize/rec_cable failed: RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
+  20260512T083200_497976_239806: failed
+
+# 2. 查看失败状态：rec_cable 失败，其余任务正常完成
+$ pipeline_cli status <run_id> --workspace /tmp/cad_demo2
+│ recognize │ rec_building  │  success  │ 100% │                              │
+│           │ rec_cable     │  failed   │   0% │ RuntimeError: Intentional... │
+│           │ rec_schematic │  success  │ 100% │                              │
+│ aggregate │ merge         │  success  │ 100% │                              │
+Pipeline 状态: failed
+
+# 3. inspect 查看失败任务的完整错误堆栈
+$ pipeline_cli inspect <run_id> --step recognize --task rec_cable --workspace /tmp/cad_demo2
+状态    : failed  进度 : 0%
+错误    : RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
+Traceback (most recent call last):
+  File ".../scheduler.py", line 220, in _dispatch_task
+    output = await task_instance.execute(validated_inputs, progress_cb)
+  File ".../tasks.py", line 113, in execute
+    _check_fail(self.task_id)
+RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
+
+# 4. fix --output：注入人工准备好的恢复数据（引擎自动校验 OutputModel 契约）
+$ pipeline_cli fix <run_id> \
+  --task recognize/rec_cable \
+  --output examples/cad_pipeline/mock_data/recover_cable.json \
+  --workspace /tmp/cad_demo2
+Fixed (output): task 'recognize/rec_cable' → RECOVERED
+
+# 5. resume：仅重调度 FAILED 任务；RECOVERED 任务跳过，不重复执行
+$ PIPELINE_DEMO_FAST=1 pipeline_cli resume <run_id> --workspace /tmp/cad_demo2
+Resumed: 20260512T083200_497976_239806
+  20260512T083200_497976_239806: success
+
+# 6. 最终状态：rec_cable 为 recovered（已跳过），整体 success
+$ pipeline_cli status <run_id> --workspace /tmp/cad_demo2
+│ recognize │ rec_building  │  success   │ 100% │
+│           │ rec_cable     │ recovered  │   0% │   ← 保留注入数据，未重跑
+│           │ rec_schematic │  success   │ 100% │
+│ aggregate │ merge         │  success   │ 100% │
+Pipeline 状态: success
+```
+
+### 场景五：细粒度执行 — 仅运行单个 step
+
+```bash
+# 只执行 parse_dxf 步骤，其余步骤不触发
+$ PIPELINE_DEMO_FAST=1 pipeline_cli run cad_cost_estimation \
+  --step parse_dxf --workspace /tmp/cad_step --wait
+Started: 20260512T083250_212844_f15b79  (pipeline: cad_cost_estimation)
+  20260512T083250_212844_f15b79: pending    ← pipeline 整体仍是 pending（只完成了一步）
+
+$ pipeline_cli status <run_id> --workspace /tmp/cad_step
+│ parse_dxf │ read_dxf       │ success │ 100% │
+│           │ parse_entities │ success │ 100% │
+Pipeline 状态: pending
+```
+
+### 场景六：交互式 REPL
+
+不带子命令启动时进入 REPL。REPL 与调度器共享事件循环——任务在后台执行，前台随时可输入命令查询或干预。
 
 ```
-load <path>                                    注册 pipeline YAML 文件
-list [--runs]                                  列出 pipeline 或活跃 run
+$ pipeline_cli --workspace /tmp/cad_demo
+Pipeline REPL  (输入 help 查看命令)
+工作目录: /tmp/cad_demo
+
+pipeline> load examples/cad_pipeline/pipeline.yaml
+已加载: cad_cost_estimation
+
+pipeline> run cad_cost_estimation
+Started: 20260512T...  (pipeline: cad_cost_estimation)
+
+# status --watch 持续刷新进度表格，任务完成后自动退出
+pipeline> status cad_cost_estimation --watch
+
+# 查看 task 详情
+pipeline> inspect <run_id> --step recognize --task rec_cable
+
+# 任务失败后注入修复数据
+pipeline> fix <run_id> --task recognize/rec_cable --output /path/to/fix.json
+修复成功 (output): task 'recognize/rec_cable' → RECOVERED
+
+# 恢复执行
+pipeline> resume <run_id>
+已恢复: 20260512T...
+
+pipeline> exit
+```
+
+---
+
+## REPL 命令参考
+
+```
+load <path> [<path>...]                            注册 pipeline YAML 文件
+list [--runs]                                      列出 pipeline 或所有 run
 run <pipeline_id> [<id>...] [--step S] [--task T]  启动 run（非阻塞）
-status <ref> [--watch] [--all]                 查看运行状态；--watch 持续刷新
-inspect <ref> [--step S] [--task T]            查看 task 详情（输入/输出/日志/堆栈）
-stop <ref>                                     有序中止 run
-resume <ref> [--include-paused]                重调度 FAILED（可选 PAUSED）任务
-fix <ref> --task S/T --output PATH             注入恢复的 output.json → RECOVERED
-fix <ref> --task S/T --input PATH              替换 input.json → 复位为 PENDING
+status <ref> [--watch] [--all]                     查看状态；--watch 持续刷新
+inspect <ref> [--step S] [--task T]                查看 task 详情
+stop <ref> [--step S --task T]                     有序中止 run（或单个 task）
+resume <ref> [--include-paused]                    重调度 FAILED（可选 PAUSED）任务
+fix <ref> --task S/T --output PATH                 注入恢复的 output.json → RECOVERED
+fix <ref> --task S/T --input PATH                  替换 input.json → 复位为 PENDING
 help / exit
 ```
+
+---
 
 ## Pipeline YAML 格式
 
@@ -78,7 +266,7 @@ steps:
         depends_on_steps: [step_one]    # 将 step_one 的叶子 task 输出注入 inputs
 ```
 
-### skip=true（跳过步骤）
+### skip=true（跳过步骤，使用预置数据）
 
 ```yaml
   - id: manual_step
@@ -87,6 +275,8 @@ steps:
       - id: placeholder
         plugin: pipeline_engine.builtin.ManualDataLoader
 ```
+
+---
 
 ## 编写任务插件
 
@@ -117,25 +307,7 @@ class MyTask(BaseTask):
         return {"result": heavy_compute(inputs["count"])}
 ```
 
-## 失败恢复工作流
-
-```
-# 1. 任务执行中失败
-pipeline> status my_pipeline
-#  recognize / rec_cable   failed   RuntimeError: ...
-
-# 2. 查看错误详情
-pipeline> inspect <run_id> --step recognize --task rec_cable
-
-# 3. 注入修复后的输出数据
-pipeline> fix <run_id> --task recognize/rec_cable --output ./recovered.json
-#  rec_cable → RECOVERED
-
-# 4. 恢复执行（已完成的任务跳过，RECOVERED 任务不重跑）
-pipeline> resume <run_id>
-pipeline> status <run_id>
-#  pipeline   success
-```
+---
 
 ## I/O 数据约定
 
@@ -147,19 +319,9 @@ pipeline> status <run_id>
 | `output.json` | 同上 | 任务成功后引擎原子写入 |
 | `log.txt` | 同上 | 任务代码可自行写入日志 |
 | `manual_data/<step_id>/output.json` | `<workspace>/` | skip=true step 的预置输出 |
-| `state.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<run_id>/` | run 状态快照 |
+| `state.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<run_id>/` | run 状态快照，进程崩溃后恢复用 |
 
-## CAD Pipeline 示例
-
-`examples/cad_pipeline/` 包含一个完整的模拟 pipeline（7 个任务，4 个步骤），演示所有引擎特性：串行步骤、step 内并行、长时任务实时进度、`run_sync` vs `async execute`，以及 fix/resume 恢复路径。
-
-```bash
-# 快速模式（sleep 时间缩短至 10%）
-PIPELINE_DEMO_FAST=1 pipeline_cli --workspace /tmp/cad_demo
-pipeline> load examples/cad_pipeline/pipeline.yaml
-pipeline> run cad_cost_estimation
-pipeline> status cad_cost_estimation --watch
-```
+---
 
 ## 技术栈
 
@@ -173,15 +335,19 @@ pipeline> status cad_cost_estimation --watch
 | 交互式 REPL | `prompt_toolkit >= 3.0` | 命令补全 + 历史记录 |
 | CLI | `Typer >= 0.12` | 子命令定义 |
 
+---
+
 ## 运行测试
 
 ```bash
-pytest                                          # 运行所有测试
-pytest tests/unit/                             # 仅单元测试
-pytest tests/integration/                      # 仅集成测试
-pytest tests/e2e/ -v                           # 端到端测试（CAD 示例）
+pytest                                              # 运行所有测试
+pytest tests/unit/                                 # 仅单元测试
+pytest tests/integration/                          # 仅集成测试
+pytest tests/e2e/ -v                               # 端到端测试（CAD 示例）
 pytest --cov=pipeline_engine --cov-fail-under=90   # 带覆盖率检查
 ```
+
+---
 
 ## 架构概览
 
@@ -196,11 +362,11 @@ Pipeline
 ```
 PENDING → RUNNING → SUCCESS
                   → FAILED
-                  → PAUSED   （abort_event 触发）
-         SKIPPED              （step 级别 skip=true）
-任意    → RECOVERED           （fix --output 后）
-FAILED  → PENDING             （reset_for_resume）
-PAUSED  → PENDING             （reset_for_resume --include-paused）
+                  → PAUSED     （abort_event 触发）
+         SKIPPED               （step 级别 skip=true）
+任意    → RECOVERED            （fix --output 后）
+FAILED  → PENDING              （reset_for_resume）
+PAUSED  → PENDING              （reset_for_resume --include-paused）
 ```
 
 关键模块（`pipeline_engine/core/`）：
