@@ -1,0 +1,6 @@
+{
+  "items": [
+    {"category": "cable", "name": "YJV-4x16", "count": 42, "subgraph_id": "sg_2"},
+    {"category": "cable", "name": "YJV-3x10", "count": 18, "subgraph_id": "sg_3"}
+  ]
+}

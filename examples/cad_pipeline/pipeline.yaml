@@ -1,0 +1,50 @@
+version: "1.0"
+pipeline:
+  id: cad_cost_estimation
+  name: "CAD 设备成本汇总（示例）"
+  description: "演示串行 step、step 内并行、长时任务、进度推送、fix 修复"
+  max_parallelism: 4
+
+steps:
+  - id: parse_dxf
+    name: "解析 DXF"
+    tasks:
+      - id: read_dxf
+        plugin: examples.cad_pipeline.tasks.ReadDxfTask
+        config:
+          dxf_path: examples/cad_pipeline/mock_data/sample.dxf
+
+      - id: parse_entities
+        plugin: examples.cad_pipeline.tasks.ParseEntitiesTask
+        depends_on: [read_dxf]
+
+  - id: split_subgraph
+    name: "子图分割与定位"
+    depends_on_steps: [parse_dxf]
+    tasks:
+      - id: split
+        plugin: examples.cad_pipeline.tasks.SplitSubgraphTask
+        depends_on_steps: [parse_dxf]
+
+  - id: recognize
+    name: "多类设备并行识别"
+    max_parallelism: 3
+    tasks:
+      - id: rec_building
+        plugin: examples.cad_pipeline.tasks.RecBuildingTask
+        depends_on_steps: [split_subgraph]
+
+      - id: rec_cable
+        plugin: examples.cad_pipeline.tasks.RecCableTask
+        depends_on_steps: [split_subgraph]
+
+      - id: rec_schematic
+        plugin: examples.cad_pipeline.tasks.RecSchematicTask
+        depends_on_steps: [split_subgraph]
+
+  - id: aggregate
+    name: "结果合并去重与成本汇总"
+    tasks:
+      - id: merge
+        plugin: examples.cad_pipeline.tasks.MergeAndDedupTask
+        depends_on_steps: [recognize]

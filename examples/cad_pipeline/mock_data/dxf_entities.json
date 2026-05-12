@@ -1,0 +1,7 @@
+{
+  "entities": [
+    {"id": "e0", "layer": "0", "type": "LINE", "bbox": [0.0, 0.0, 1.0, 1.0]},
+    {"id": "e1", "layer": "EQUIP", "type": "BLOCK", "bbox": [1.0, 1.0, 3.0, 3.0]},
+    {"id": "e2", "layer": "CABLE", "type": "POLYLINE", "bbox": [0.0, 1.0, 5.0, 2.0]}
+  ]
+}

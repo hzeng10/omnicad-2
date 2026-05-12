@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(pip install *)",
+      "Bash(python3 -m pip --version)",
+      "Bash(python3 -c \"import rich; print\\('rich', rich.__version__\\)\")",
+      "Bash(python3 -c \"import yaml; print\\('yaml ok'\\)\")",
+      "Bash(python3 -c \"import pydantic\")",
+      "Bash(python3 -c \"import networkx\")",
+      "Bash(apt-get install *)",
+      "Bash(curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py)",
+      "Bash(python3 /tmp/get-pip.py --user)",
+      "Bash(python3 -m ensurepip --user)",
+      "Read(//usr/bin/**)",
+      "Read(//home/z00841170/**)",
+      "Bash(python3 -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m venv /home/z00841170/dev/omnicad-2/.venv)",
+      "Bash(sudo apt-get install -y python3-pip python3-venv)",
+      "Bash(python3 -m pip install --user \"pydantic>=2.5\" \"networkx>=3.0\" \"PyYAML>=6.0\" \"rich>=13.0\" \"prompt_toolkit>=3.0\" \"typer>=0.12\" \"pytest>=8.0\" \"pytest-asyncio>=0.23\" \"pytest-cov\")",
+      "Bash(python3 -m pip install --user --break-system-packages \"pydantic>=2.5\" \"networkx>=3.0\" \"PyYAML>=6.0\" \"prompt_toolkit>=3.0\" \"typer>=0.12\" \"pytest>=8.0\" \"pytest-asyncio>=0.23\" \"pytest-cov\")",
+      "Bash(python3 *)",
+      "Bash(PATH=__TRACKED_VAR__/.local/bin:__TRACKED_VAR__ python3 -m pip install -e . --break-system-packages -q)",
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(PATH=\"$HOME/.local/bin:$PATH\" pytest *)",
+      "Bash(PATH=__TRACKED_VAR__/.local/bin:__TRACKED_VAR__ pytest tests/unit/ tests/integration/test_scheduler.py -v)",
+      "Bash(PATH=__TRACKED_VAR__/.local/bin:__TRACKED_VAR__ pytest tests/unit/ tests/integration/ -v --tb=short)",
+      "Bash(PATH=\"$HOME/.local/bin:$PATH\" python *)",
+      "Bash(PATH=\"$HOME/.local/bin:$PATH\" PIPELINE_DEMO_FAST=1 pytest *)",
+      "Bash(PATH=__TRACKED_VAR__/.local/bin:__TRACKED_VAR__ PIPELINE_DEMO_FAST=1 pytest --cov=pipeline_engine --cov-report=term-missing -q)",
+      "Bash(PATH=__TRACKED_VAR__/.local/bin:__TRACKED_VAR__ PIPELINE_DEMO_FAST=1 pytest --cov=pipeline_engine --cov-fail-under=90 -v)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}
