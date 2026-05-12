@@ -224,6 +224,48 @@ class RunManager:
             )
         return self._registry[pipeline_id]
 
+    def restore_runs_from_disk(self) -> None:
+        """Reconstruct RunContext objects for all persisted runs found on disk.
+
+        Called by CLI one-shot commands so that stop/resume/fix can address
+        runs that were started in a previous process.  Active asyncio Tasks are
+        not restored (main_task stays None), which is correct: the original
+        process is gone.  State and scheduler are fully reconstructed so that
+        fix / resume can work normally.
+        """
+        runs_root = storage.get_runs_root(self.workspace)
+        if not runs_root.exists():
+            return
+        for pid_dir in runs_root.iterdir():
+            if not pid_dir.is_dir() or pid_dir.name == "registry.json":
+                continue
+            pipeline_id = pid_dir.name
+            if pipeline_id not in self._registry:
+                continue
+            spec = self._registry[pipeline_id]
+            for run_dir in pid_dir.iterdir():
+                if not run_dir.is_dir():
+                    continue
+                run_id = run_dir.name
+                if run_id in self._runs:
+                    continue
+                try:
+                    run_state = storage.load_state(self.workspace, pipeline_id, run_id)
+                except PipelineError:
+                    continue
+                sm = StateManager(run_state)
+                abort_event = asyncio.Event()
+                sched = AsyncScheduler(spec, sm, self.workspace, abort_event, self._global_sem)
+                ctx = RunContext(
+                    pipeline_spec=spec,
+                    run_id=run_id,
+                    workspace=run_dir,
+                    scheduler=sched,
+                    state_manager=sm,
+                    abort_event=abort_event,
+                )
+                self._runs[run_id] = ctx
+
     def _resolve_run(self, ref: str) -> RunContext:
         """Resolve ref as run_id first, then as pipeline_id."""
         if ref in self._runs:

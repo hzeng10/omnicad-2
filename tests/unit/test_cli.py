@@ -129,3 +129,90 @@ def test_status_unknown_run(tmp_path):
 def test_inspect_unknown_run(tmp_path):
     result = runner.invoke(app, ["inspect", "bad_ref", "--workspace", str(tmp_path)])
     assert result.exit_code != 0
+
+
+# ─── stop ─────────────────────────────────────────────────────────────────────
+
+def test_stop_unknown_run(tmp_path):
+    result = runner.invoke(app, ["stop", "no_such_run", "--workspace", str(tmp_path)])
+    assert result.exit_code != 0
+
+
+def test_stop_known_run(tmp_path):
+    yaml_p = _make_yaml(tmp_path, "stop_pipe")
+    runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
+    # Run with --wait so the run_id is in the registry on disk
+    run_result = runner.invoke(app, ["run", "stop_pipe", "--workspace", str(tmp_path), "--wait"])
+    assert run_result.exit_code == 0
+    # Extract run_id from "Started: <run_id> ..."
+    run_id = run_result.output.split("Started: ")[1].split()[0]
+    result = runner.invoke(app, ["stop", run_id, "--workspace", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Stopped" in result.output
+
+
+# ─── resume ───────────────────────────────────────────────────────────────────
+
+def test_resume_unknown_run(tmp_path):
+    result = runner.invoke(app, ["resume", "no_such_run", "--workspace", str(tmp_path)])
+    assert result.exit_code != 0
+
+
+def test_resume_completed_run(tmp_path):
+    yaml_p = _make_yaml(tmp_path, "res_pipe")
+    runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
+    run_result = runner.invoke(app, ["run", "res_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_id = run_result.output.split("Started: ")[1].split()[0]
+    result = runner.invoke(app, ["resume", run_id, "--workspace", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "Resumed" in result.output
+
+
+# ─── fix ──────────────────────────────────────────────────────────────────────
+
+def test_fix_unknown_run(tmp_path):
+    result = runner.invoke(app, [
+        "fix", "no_such", "--task", "s/t",
+        "--output", str(tmp_path / "x.json"),
+        "--workspace", str(tmp_path),
+    ])
+    assert result.exit_code != 0
+
+
+def test_fix_output_on_completed_task(tmp_path):
+    import json as _json
+    yaml_p = _make_yaml(tmp_path, "fix_pipe")
+    runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
+    run_result = runner.invoke(app, ["run", "fix_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_id = run_result.output.split("Started: ")[1].split()[0]
+
+    out_file = tmp_path / "fixed.json"
+    out_file.write_text(_json.dumps({"ok": True}))
+    result = runner.invoke(app, [
+        "fix", run_id, "--task", "step_a/t1",
+        "--output", str(out_file),
+        "--workspace", str(tmp_path),
+    ])
+    assert result.exit_code == 0
+    assert "RECOVERED" in result.output
+
+
+# ─── max_parallelism validation ───────────────────────────────────────────────
+
+def test_lint_invalid_max_parallelism(tmp_path):
+    import textwrap
+    bad = tmp_path / "bad_para.yaml"
+    bad.write_text(textwrap.dedent("""\
+        version: "1.0"
+        pipeline:
+          id: bad_pipe
+          name: "Bad"
+          max_parallelism: 0
+        steps:
+          - id: s1
+            tasks:
+              - id: t1
+                plugin: some.Task
+    """))
+    result = runner.invoke(app, ["lint", str(bad)])
+    assert result.exit_code != 0

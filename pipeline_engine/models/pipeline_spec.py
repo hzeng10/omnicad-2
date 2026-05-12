@@ -43,6 +43,13 @@ class StepSpec(BaseModel):
     def validate_id(cls, v: str) -> str:
         return _check_id(v)
 
+    @field_validator("max_parallelism")
+    @classmethod
+    def parallelism_positive(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("max_parallelism must be >= 1")
+        return v
+
     @field_validator("tasks")
     @classmethod
     def tasks_not_empty(cls, v: list[TaskSpec]) -> list[TaskSpec]:
@@ -70,6 +77,13 @@ class PipelineMeta(BaseModel):
     @classmethod
     def validate_id(cls, v: str) -> str:
         return _check_id(v)
+
+    @field_validator("max_parallelism")
+    @classmethod
+    def parallelism_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_parallelism must be >= 1")
+        return v
 
 
 class PipelineSpec(BaseModel):

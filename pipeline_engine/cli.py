@@ -169,6 +169,89 @@ def inspect(
     asyncio.run(_inspect())
 
 
+@app.command()
+def stop(
+    ref: str = typer.Argument(..., help="run_id or pipeline_id."),
+    workspace: Optional[Path] = _workspace_option,
+    step: Optional[str] = typer.Option(None, "--step", "-s"),
+    task: Optional[str] = typer.Option(None, "--task", "-t"),
+) -> None:
+    """Abort an active run (or a single task within it)."""
+    from pipeline_engine.core.run_manager import RunManager
+    from pipeline_engine.core.errors import PipelineError
+
+    async def _stop() -> None:
+        rm = RunManager(_get_workspace(workspace))
+        _reload_registry(rm, restore_runs=True)
+        try:
+            await rm.stop(ref, step_id=step, task_id=task)
+            typer.echo(f"Stopped: {ref}")
+        except PipelineError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
+
+    asyncio.run(_stop())
+
+
+@app.command()
+def resume(
+    ref: str = typer.Argument(..., help="run_id or pipeline_id."),
+    workspace: Optional[Path] = _workspace_option,
+    include_paused: bool = typer.Option(False, "--include-paused", help="Also resume paused tasks."),
+) -> None:
+    """Resume a failed (or paused) run."""
+    from pipeline_engine.core.run_manager import RunManager
+    from pipeline_engine.core.errors import PipelineError
+
+    async def _resume() -> None:
+        rm = RunManager(_get_workspace(workspace))
+        _reload_registry(rm, restore_runs=True)
+        try:
+            run_id = await rm.resume(ref, include_paused=include_paused)
+            typer.echo(f"Resumed: {run_id}")
+            ctx = rm._runs[run_id]
+            await ctx.main_task
+            state = await rm.get_run_state(run_id)
+            typer.echo(f"  {run_id}: {state.status.value}")
+        except PipelineError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
+
+    asyncio.run(_resume())
+
+
+@app.command()
+def fix(
+    ref: str = typer.Argument(..., help="run_id or pipeline_id."),
+    task_locator: str = typer.Option(..., "--task", "-t", help="step_id/task_id or task_id."),
+    workspace: Optional[Path] = _workspace_option,
+    output_path: Optional[Path] = typer.Option(None, "--output", help="Recovered output JSON file."),
+    input_path: Optional[Path] = typer.Option(None, "--input", help="Replacement input JSON file."),
+) -> None:
+    """Supply a recovered output or replacement input for a failed task."""
+    from pipeline_engine.core.run_manager import RunManager
+    from pipeline_engine.core.errors import PipelineError
+
+    async def _fix() -> None:
+        rm = RunManager(_get_workspace(workspace))
+        _reload_registry(rm, restore_runs=True)
+        try:
+            await rm.fix(
+                ref, task_locator,
+                output_path=str(output_path) if output_path else None,
+                input_path=str(input_path) if input_path else None,
+            )
+            if output_path:
+                typer.echo(f"Fixed (output): task '{task_locator}' → RECOVERED")
+            else:
+                typer.echo(f"Fixed (input): task '{task_locator}' input updated → PENDING")
+        except PipelineError as e:
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
+
+    asyncio.run(_fix())
+
+
 @app.command("list")
 def list_cmd(
     workspace: Optional[Path] = _workspace_option,
@@ -189,8 +272,8 @@ def list_cmd(
     asyncio.run(_list())
 
 
-def _reload_registry(rm) -> None:
-    """Reload pipelines from on-disk registry into rm._registry (sync helper)."""
+def _reload_registry(rm, restore_runs: bool = False) -> None:
+    """Reload pipelines (and optionally runs) from on-disk state."""
     from pipeline_engine.core import storage
     from pipeline_engine.core.yaml_parser import load_pipeline_spec
     from pipeline_engine.core.dag_validator import validate_pipeline
@@ -205,3 +288,5 @@ def _reload_registry(rm) -> None:
                 rm._registry[pid] = spec
             except Exception:
                 pass
+    if restore_runs:
+        rm.restore_runs_from_disk()
