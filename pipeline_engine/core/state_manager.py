@@ -1,3 +1,25 @@
+"""状态管理器：单次 pipeline run 的运行时状态的唯一可信来源（Single Source of Truth）。
+
+设计原则
+--------
+- **线程安全**：所有读写操作均通过 ``asyncio.Lock`` 序列化，REPL 读取与后台任务写入不会发生竞态。
+- **原子持久化**：每次状态变更后立即通过 ``storage.persist_state`` 写盘（write-tmp + os.replace），
+  进程崩溃后可从 ``state.json`` 完整恢复。
+- **隔离性**：每个 run 持有独立的 StateManager 实例，多 Pipeline 并行运行时互不干扰。
+- **状态机守卫**：``finish_task``、``fail_task``、``update_progress`` 内置非法迁移检查，
+  防止竞态（如任务已被暂停后线程仍试图写入 SUCCESS）导致状态混乱。
+
+合法的任务状态转换
+------------------
+::
+
+    PENDING → RUNNING → SUCCESS
+                      → FAILED
+                      → PAUSED   (abort_event 触发时)
+    FAILED  → PENDING  (reset_for_resume)
+    PAUSED  → PENDING  (reset_for_resume --include-paused)
+    任意    → RECOVERED (fix --output 后调用 recover_task)
+"""
 from __future__ import annotations
 
 import asyncio
@@ -16,67 +38,87 @@ from pipeline_engine.models.runtime_state import (
 
 
 def _now() -> datetime:
+    """返回当前 UTC 时间（带时区信息）。"""
     return datetime.now(tz=timezone.utc)
 
 
 class StateManager:
-    """Thread-safe (asyncio.Lock) owner of a single PipelineRunState.
+    """单次 pipeline run 的运行时状态管理器。
 
-    All mutations go through this class; each mutation persists state.json
-    before returning.
+    外部代码应通过本类的公共 async 方法读写状态，不应直接访问 ``_state`` / ``_lock``
+    等私有属性（RunManager 内部有两处遗留的直接访问，已在 C1 修复计划中标记）。
     """
 
     def __init__(self, run_state: PipelineRunState) -> None:
         self._state = run_state
         self._lock = asyncio.Lock()
 
-    # ─── read API ─────────────────────────────────────────────────────────────
+    # ─── 读 API ───────────────────────────────────────────────────────────────
 
     async def get_run_state(self) -> PipelineRunState:
+        """返回当前运行状态的深拷贝，防止调用方意外修改内部状态。"""
         async with self._lock:
-            # Return a deep copy so callers can't mutate internal state
             return self._state.model_copy(deep=True)
 
     async def get_task_state(self, step_id: str, task_id: str) -> TaskState:
+        """返回指定任务状态的深拷贝。"""
         async with self._lock:
             return self._task(step_id, task_id).model_copy(deep=True)
 
     async def get_step_state(self, step_id: str) -> StepState:
+        """返回指定步骤状态的深拷贝。"""
         async with self._lock:
             return self._step(step_id).model_copy(deep=True)
 
-    # ─── initialisation ───────────────────────────────────────────────────────
+    # ─── 初始化 ───────────────────────────────────────────────────────────────
 
     async def init_step(self, step_id: str, task_ids: list[str]) -> None:
+        """初始化步骤及其任务的状态记录。
+
+        若步骤已存在，则保留各任务的现有状态（RECOVERED/SKIPPED 等终态不会被重置），
+        以支持 resume 场景中跳过已完成的任务。
+        """
         async with self._lock:
             existing = self._state.steps.get(step_id)
             tasks = {}
             for tid in task_ids:
                 if existing and tid in existing.tasks:
-                    # Preserve terminal states (SUCCESS, RECOVERED, SKIPPED) across re-runs
+                    # 保留终态（SUCCESS、RECOVERED、SKIPPED 等），避免 resume 时重置已完成任务
                     tasks[tid] = existing.tasks[tid]
                 else:
                     tasks[tid] = TaskState(id=tid)
             self._state.steps[step_id] = StepState(id=step_id, tasks=tasks)
             self._persist()
 
-    # ─── pipeline-level mutations ─────────────────────────────────────────────
+    # ─── pipeline 级别变更 ────────────────────────────────────────────────────
 
     async def start_pipeline(self) -> None:
+        """将 pipeline 状态置为 RUNNING 并记录开始时间。"""
         async with self._lock:
             self._state.status = Status.RUNNING
             self._state.started_at = _now()
             self._persist()
 
     async def finish_pipeline(self, success: bool) -> None:
+        """将 pipeline 状态置为 SUCCESS 或 FAILED 并记录结束时间。"""
         async with self._lock:
             self._state.status = Status.SUCCESS if success else Status.FAILED
             self._state.finished_at = _now()
             self._persist()
 
-    # ─── step-level mutations ─────────────────────────────────────────────────
+    async def reset_pipeline_status(self, status: Status) -> None:
+        """重置 pipeline 级别的状态（供 RunManager.resume 调用）。
+
+        避免 RunManager 直接操作 ``_state`` 私有属性。
+        """
+        async with self._lock:
+            self._state.status = status
+            self._persist()
+
+    # ─── step 级别变更 ────────────────────────────────────────────────────────
 
     async def start_step(self, step_id: str) -> None:
+        """将步骤状态置为 RUNNING 并记录开始时间。"""
         async with self._lock:
             step = self._step(step_id)
             step.status = Status.RUNNING
@@ -84,6 +126,7 @@ class StateManager:
             self._persist()
 
     async def finish_step(self, step_id: str, success: bool) -> None:
+        """将步骤状态置为 SUCCESS 或 FAILED 并记录结束时间。"""
         async with self._lock:
             step = self._step(step_id)
             step.status = Status.SUCCESS if success else Status.FAILED
@@ -91,6 +134,7 @@ class StateManager:
             self._persist()
 
     async def skip_step(self, step_id: str) -> None:
+        """将步骤状态置为 SKIPPED（skip=true 时由调度器调用）。"""
         async with self._lock:
             step = self._step(step_id)
             step.status = Status.SKIPPED
@@ -98,9 +142,10 @@ class StateManager:
             step.finished_at = _now()
             self._persist()
 
-    # ─── task-level mutations ─────────────────────────────────────────────────
+    # ─── task 级别变更 ────────────────────────────────────────────────────────
 
     async def start_task(self, step_id: str, task_id: str) -> None:
+        """将任务状态置为 RUNNING 并记录开始时间。"""
         async with self._lock:
             task = self._task(step_id, task_id)
             task.status = Status.RUNNING
@@ -116,10 +161,16 @@ class StateManager:
         output_path: str | None = None,
         log_path: str | None = None,
     ) -> None:
+        """将任务状态置为 SUCCESS 并更新文件路径信息。
+
+        守卫：仅当任务处于 RUNNING 时才执行迁移。
+        若任务已被 pause 或已处于终态（如 PAUSED / RECOVERED），则静默忽略，
+        防止线程池任务完成时覆盖已暂停的状态（B2/B5 修复）。
+        """
         async with self._lock:
             task = self._task(step_id, task_id)
-            # Guard: only transition from RUNNING; discard if task was paused/already terminal.
             if task.status != Status.RUNNING:
+                # 任务已不处于 RUNNING（可能被暂停或已通过 fix 置为 RECOVERED），丢弃结果
                 return
             task.status = Status.SUCCESS
             task.progress = 100
@@ -139,10 +190,15 @@ class StateManager:
         error: str,
         exc: BaseException | None = None,
     ) -> None:
+        """将任务状态置为 FAILED 并记录错误信息及堆栈。
+
+        守卫：仅当任务处于 RUNNING 或 PENDING 时才执行迁移，
+        避免覆盖已处于终态（SUCCESS / RECOVERED / SKIPPED）或 PAUSED 的任务（B5 修复）。
+        """
         async with self._lock:
             task = self._task(step_id, task_id)
-            # Guard: only RUNNING/PENDING tasks can fail; discard if already terminal or paused.
             if task.status not in (Status.RUNNING, Status.PENDING):
+                # 终态或 PAUSED 任务不可被 fail 覆盖
                 return
             task.status = Status.FAILED
             task.finished_at = _now()
@@ -152,7 +208,7 @@ class StateManager:
             self._persist()
 
     async def pause_task(self, step_id: str, task_id: str) -> None:
-        """Pause a RUNNING or PENDING task (e.g. on abort)."""
+        """将 RUNNING 或 PENDING 的任务置为 PAUSED（abort_event 触发时使用）。"""
         async with self._lock:
             task = self._task(step_id, task_id)
             if task.status in (Status.RUNNING, Status.PENDING):
@@ -162,9 +218,12 @@ class StateManager:
     async def update_progress(
         self, step_id: str, task_id: str, progress: int
     ) -> None:
+        """更新任务进度（0–100）。
+
+        守卫：仅当任务处于 RUNNING 时才更新，避免在任务暂停后仍收到线程的进度回调。
+        """
         async with self._lock:
             task = self._task(step_id, task_id)
-            # Guard: only update progress while task is still running.
             if task.status != Status.RUNNING:
                 return
             task.progress = max(0, min(100, progress))
@@ -177,7 +236,12 @@ class StateManager:
         output_path: str,
         recovered_by: str,
     ) -> None:
-        """Mark a task as RECOVERED after fix --output."""
+        """将任务标记为 RECOVERED（fix --output 成功后调用）。
+
+        ``recovered_by`` 记录补齐操作的审计信息（如 "fix@<timestamp>"）。
+        RECOVERED 状态的任务在 resume 时会被 already_done 集合跳过，
+        不会重新执行，但其 output.json 可供下游正常消费。
+        """
         async with self._lock:
             task = self._task(step_id, task_id)
             task.status = Status.RECOVERED
@@ -188,12 +252,28 @@ class StateManager:
             task.stack_trace = None
             self._persist()
 
+    async def replace_task_input(self, step_id: str, task_id: str) -> None:
+        """将任务重置为 PENDING，供 fix --input 后调用（C1 修复：替代直接访问 _state）。
+
+        fix --input 操作将新的 input.json 写入磁盘后，需要把任务状态
+        复位为 PENDING 以便 resume 重新调度。
+        """
+        async with self._lock:
+            task = self._task(step_id, task_id)
+            task.status = Status.PENDING
+            task.error = None
+            task.stack_trace = None
+            self._persist()
+
     async def reset_for_resume(
         self, step_id: str, task_id: str, include_paused: bool = False
     ) -> bool:
-        """Reset a Failed (or optionally Paused) task to Pending for rescheduling.
+        """将 FAILED（或可选 PAUSED）的任务复位为 PENDING 以供重调度。
 
-        Returns True if the task was reset.
+        Returns
+        -------
+        bool
+            若任务被复位则为 True，否则为 False。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
@@ -212,10 +292,13 @@ class StateManager:
             return False
 
     def demote_orphans_sync(self) -> None:
-        """Reset any RUNNING tasks/steps/pipeline to FAILED (no-lock; safe to call during restore).
+        """将所有残留的 RUNNING 状态复位为 FAILED（进程恢复时调用，无需加锁）。
 
-        Called by restore_runs_from_disk before the RunContext is registered, so
-        no concurrent access is possible yet.
+        ``restore_runs_from_disk`` 在注册 RunContext 之前调用本方法，
+        此时尚无并发访问，故不使用 asyncio.Lock 而直接操作内部状态。
+
+        效果：进程崩溃/被杀时遗留的 RUNNING task / step / pipeline
+        在下次 resume 时会被正确识别为 FAILED 并重新调度。
         """
         changed = False
         for step in self._state.steps.values():
@@ -236,9 +319,10 @@ class StateManager:
         if changed:
             self._persist()
 
-    # ─── helpers ──────────────────────────────────────────────────────────────
+    # ─── 内部工具方法 ─────────────────────────────────────────────────────────
 
     def _step(self, step_id: str) -> StepState:
+        """按 step_id 查找步骤状态，不存在则抛出 PipelineError。"""
         try:
             return self._state.steps[step_id]
         except KeyError:
@@ -249,6 +333,7 @@ class StateManager:
             )
 
     def _task(self, step_id: str, task_id: str) -> TaskState:
+        """按 step_id + task_id 查找任务状态，不存在则抛出 PipelineError。"""
         step = self._step(step_id)
         try:
             return step.tasks[task_id]
@@ -261,4 +346,5 @@ class StateManager:
             )
 
     def _persist(self) -> None:
+        """将当前内存状态原子写入磁盘（必须在持有 _lock 时调用，或在无并发的初始化阶段调用）。"""
         storage.persist_state(self._state)

@@ -1,8 +1,25 @@
+"""运行管理器：进程级单例，协调所有已加载 pipeline 及其活跃 run。
+
+职责
+----
+- **加载**：解析并校验 YAML 配置，写入 registry.json。
+- **启动**：为每个 run 创建独立 RunContext（scheduler + state_manager + abort_event）。
+- **停止**：设置 abort_event 触发有序关闭；可选强制取消 main_task。
+- **恢复**：复位 FAILED/PAUSED 任务 → PENDING，重建调度器 Task。
+- **修复**：向失败任务注入 input/output 数据，驱动后续 resume。
+- **查询**：列出已注册 pipeline 和运行记录。
+- **跨进程恢复**：`restore_runs_from_disk` 从 state.json 重建 RunContext，
+  用于 CLI 一次性子命令（stop/resume/fix）访问上一进程启动的 run。
+
+线程安全：所有 registry / runs 字典的读写通过 ``asyncio.Lock`` 序列化。
+重入保护（A3）：start_run / resume / fix 会检查 ``ctx.is_active()``，
+拒绝在已有活跃调度器的情况下重复启动，防止两个调度器并发写同一 StateManager。
+"""
 from __future__ import annotations
 
 import asyncio
 import multiprocessing
-import os
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,29 +36,32 @@ from pipeline_engine.models.runtime_state import PipelineRunState, Status
 
 
 def _new_run_id() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
+    """生成唯一 run_id：时间戳 + 6 位随机十六进制后缀，避免微秒级冲突（C4 修复）。"""
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
+    suffix = secrets.token_hex(3)
+    return f"{ts}_{suffix}"
 
 
 class RunManager:
-    """Process-level singleton that coordinates all loaded pipelines and active runs.
+    """进程级单例：管理所有已加载 pipeline 及活跃 run。
 
-    Thread safety: all mutations guarded by asyncio.Lock.
-    Multi-run parallelism: each run gets its own asyncio.Task; a shared Semaphore
-    caps total concurrent thread-pool workers across all runs.
+    外部代码通过本类的 async 方法操作 run，不应直接访问 ``_registry`` / ``_runs``
+    等私有字典。
     """
 
     def __init__(self, workspace: str | Path) -> None:
         self.workspace = Path(workspace)
-        self._registry: dict[str, PipelineSpec] = {}       # pipeline_id → spec
-        self._runs: dict[str, RunContext] = {}              # run_id → ctx
+        self._registry: dict[str, PipelineSpec] = {}   # pipeline_id → spec
+        self._runs: dict[str, RunContext] = {}          # run_id → ctx
         self._lock = asyncio.Lock()
+        # 进程级并发限制：最多同时跑 cpu_count 个 task 线程
         cpu = multiprocessing.cpu_count()
         self._global_sem = asyncio.Semaphore(cpu)
 
-    # ─── load ─────────────────────────────────────────────────────────────────
+    # ─── 加载 ─────────────────────────────────────────────────────────────────
 
     async def load(self, yaml_path: str | Path) -> str:
-        """Parse, validate and register a pipeline YAML. Returns pipeline_id."""
+        """解析并注册 pipeline YAML，写入 registry.json。返回 pipeline_id。"""
         spec = load_pipeline_spec(yaml_path)
         validate_pipeline(spec)
         async with self._lock:
@@ -55,7 +75,7 @@ class RunManager:
             storage.save_registry(self.workspace, reg)
         return spec.pipeline.id
 
-    # ─── run ──────────────────────────────────────────────────────────────────
+    # ─── 启动 ─────────────────────────────────────────────────────────────────
 
     async def start_run(
         self,
@@ -64,9 +84,21 @@ class RunManager:
         step_id: str | None = None,
         task_id: str | None = None,
     ) -> str:
-        """Start a new run for pipeline_id in the background. Returns run_id."""
+        """在后台启动新 run，返回 run_id。
+
+        A3 修复：若该 pipeline 已有活跃 run（is_active() == True），则拒绝，
+        防止两个调度器并发写同一 StateManager 引发状态混乱。
+        """
         async with self._lock:
             spec = self._get_spec(pipeline_id)
+            # A3：防止同一 pipeline 重叠运行
+            for ctx in self._runs.values():
+                if ctx.pipeline_id == pipeline_id and ctx.is_active():
+                    raise PipelineError(
+                        f"pipeline '{pipeline_id}' 已有活跃的 run '{ctx.run_id}'，"
+                        "请先 stop 后再 run",
+                        pipeline_id=pipeline_id,
+                    )
             run_id = _new_run_id()
             run_dir = storage.init_run_dir(self.workspace, pipeline_id, run_id)
             run_state = PipelineRunState(
@@ -97,7 +129,7 @@ class RunManager:
         ctx.main_task = asyncio.create_task(coro, name=f"run-{run_id}")
         return run_id
 
-    # ─── stop ─────────────────────────────────────────────────────────────────
+    # ─── 停止 ─────────────────────────────────────────────────────────────────
 
     async def stop(
         self,
@@ -106,35 +138,51 @@ class RunManager:
         step_id: str | None = None,
         task_id: str | None = None,
     ) -> None:
-        """Trigger orderly abort of a run (or a specific step/task within it)."""
+        """触发有序中止：设置 abort_event，不再分发新 task。
+
+        若指定了 step_id/task_id，则只暂停该 task；否则中止整个 run。
+        """
         ctx = self._resolve_run(ref)
         if task_id and step_id:
             await ctx.state_manager.pause_task(step_id, task_id)
         else:
             ctx.abort_event.set()
 
-    # ─── resume ───────────────────────────────────────────────────────────────
+    # ─── 恢复 ─────────────────────────────────────────────────────────────────
 
     async def resume(self, ref: str, *, include_paused: bool = False) -> str:
-        """Resume a failed/paused run.
+        """恢复 FAILED/PAUSED 的 run。
 
-        Resets eligible tasks to PENDING, creates a new asyncio.Task for the
-        same RunContext (preserving run_id), and returns run_id.
+        A3 修复：检查是否已有活跃调度器，拒绝重入。
+        C1 修复：通过 ``sm.reset_pipeline_status()`` 公共 API 重置 pipeline 状态，
+        不再直接访问 ``sm._lock`` / ``sm._state``。
+
+        流程：
+        1. 将 FAILED（及可选 PAUSED）task 复位为 PENDING。
+        2. 重置 pipeline 状态为 PENDING。
+        3. 刷新 abort_event（允许再次被 stop）。
+        4. 创建新的 asyncio.Task 驱动调度器。
         """
         ctx = self._resolve_run(ref)
+
+        # A3：防止重叠运行
+        if ctx.is_active():
+            raise PipelineError(
+                f"run '{ctx.run_id}' 已处于活跃状态，请先 stop 后再 resume",
+                pipeline_id=ctx.pipeline_id,
+            )
+
         sm = ctx.state_manager
         run_state = await sm.get_run_state()
 
         for step_state in run_state.steps.values():
-            for task_id in step_state.tasks:
-                await sm.reset_for_resume(step_state.id, task_id, include_paused=include_paused)
+            for tid in step_state.tasks:
+                await sm.reset_for_resume(step_state.id, tid, include_paused=include_paused)
 
-        # Reset pipeline-level state to allow re-execution
-        async with sm._lock:
-            sm._state.status = Status.PENDING
-            sm._persist()
+        # C1：使用公共 API 重置 pipeline 状态，避免直接访问内部属性
+        await sm.reset_pipeline_status(Status.PENDING)
 
-        # Create a fresh abort event so this resumed run can be stopped again
+        # 刷新 abort_event，确保本次 resume 可以被再次 stop
         ctx.abort_event = asyncio.Event()
         ctx.scheduler._abort_event = ctx.abort_event
 
@@ -143,28 +191,66 @@ class RunManager:
         )
         return ctx.run_id
 
-    # ─── fix ──────────────────────────────────────────────────────────────────
+    # ─── 修复 ─────────────────────────────────────────────────────────────────
 
     async def fix(
         self,
         ref: str,
-        task_locator: str,  # "step_id/task_id" or just "task_id" (searched)
+        task_locator: str,
         *,
         input_path: str | Path | None = None,
         output_path: str | Path | None = None,
     ) -> None:
-        """Manually supply input or output for a failed/stuck task.
+        """手动注入 input 或 output 以修复失败任务。
 
-        task_locator format: "step_id/task_id"
+        task_locator 格式：``step_id/task_id``（或仅 task_id，将在所有 step 搜索）。
+
+        A3 修复：若 run 正在活跃运行，拒绝 fix，防止并发写入。
+        B4 修复：fix --output 在写盘前先对 JSON 做 OutputModel 校验，
+        确保注入的数据符合任务契约。
+        C1 修复：fix --input 改用 ``sm.replace_task_input()`` 公共 API，
+        不再直接访问 ``sm._lock`` / ``sm._state``。
         """
         ctx = self._resolve_run(ref)
+
+        # A3：活跃运行时禁止 fix，防止并发改写状态
+        if ctx.is_active():
+            raise PipelineError(
+                f"run '{ctx.run_id}' 正在运行，请先 stop 后再 fix",
+                pipeline_id=ctx.pipeline_id,
+            )
+
         step_id, task_id = self._parse_task_locator(ctx, task_locator)
         pipeline_id = ctx.pipeline_id
         run_id = ctx.run_id
 
         if output_path:
+            # B4：先做 OutputModel 校验，验证通过再写盘
+            src = Path(output_path)
+            if not src.exists():
+                raise PipelineError(f"input file not found: {src}")
+            try:
+                raw_data = storage.read_json(src)
+            except Exception as exc:
+                raise PipelineError(f"fix source is not valid JSON: {exc}") from exc
+
+            # 找到 task spec，若有 OutputModel 则校验
+            task_spec = self._find_task_spec(ctx, step_id, task_id)
+            if task_spec is not None:
+                from pipeline_engine.core.plugin_loader import instantiate_task as _inst
+                try:
+                    inst = _inst(task_spec.plugin, task_id, task_spec.config)
+                    raw_data = inst.validate_output(raw_data)
+                except PipelineError as exc:
+                    raise PipelineError(
+                        f"fix --output data does not satisfy OutputModel: {exc}",
+                        pipeline_id=pipeline_id,
+                        step_id=step_id,
+                        task_id=task_id,
+                    ) from exc
+
             dest = storage.fix_output(
-                self.workspace, pipeline_id, run_id, step_id, task_id, output_path
+                self.workspace, pipeline_id, run_id, step_id, task_id, src
             )
             recovered_by = f"fix-output@{datetime.now(tz=timezone.utc).isoformat()}"
             await ctx.state_manager.recover_task(
@@ -180,27 +266,22 @@ class RunManager:
                 self.workspace, pipeline_id, run_id, step_id, task_id
             )
             storage.atomic_write_json(task_dir / "input.json", storage.read_json(src))
-            # input fix just resets the task to Pending; user then calls resume
-            run_state = await ctx.state_manager.get_run_state()
-            ts = run_state.steps.get(step_id, {})
-            # Reset status to PENDING so it can be rescheduled
-            async with ctx.state_manager._lock:
-                task = ctx.state_manager._task(step_id, task_id)
-                task.status = Status.PENDING
-                task.error = None
-                ctx.state_manager._persist()
+            # C1：使用公共 API 复位任务状态，不再直接访问 _lock/_state
+            await ctx.state_manager.replace_task_input(step_id, task_id)
         else:
             raise PipelineError("fix requires --input or --output")
 
-    # ─── query ────────────────────────────────────────────────────────────────
+    # ─── 查询 ─────────────────────────────────────────────────────────────────
 
     def list_pipelines(self) -> list[dict[str, Any]]:
+        """列出所有已注册的 pipeline。"""
         return [
             {"pipeline_id": pid, "name": spec.pipeline.name}
             for pid, spec in self._registry.items()
         ]
 
     def list_runs(self) -> list[dict[str, Any]]:
+        """列出所有已知 run 的摘要信息。"""
         result = []
         for run_id, ctx in self._runs.items():
             result.append({
@@ -211,27 +292,22 @@ class RunManager:
         return result
 
     async def get_run_state(self, ref: str) -> PipelineRunState:
+        """返回指定 run 的完整状态快照。"""
         ctx = self._resolve_run(ref)
         return await ctx.state_manager.get_run_state()
 
-    # ─── helpers ──────────────────────────────────────────────────────────────
-
-    def _get_spec(self, pipeline_id: str) -> PipelineSpec:
-        if pipeline_id not in self._registry:
-            raise PipelineError(
-                f"pipeline '{pipeline_id}' not loaded — use 'load <path>' first",
-                pipeline_id=pipeline_id,
-            )
-        return self._registry[pipeline_id]
+    # ─── 跨进程恢复 ───────────────────────────────────────────────────────────
 
     def restore_runs_from_disk(self) -> None:
-        """Reconstruct RunContext objects for all persisted runs found on disk.
+        """从磁盘重建所有持久化 run 的 RunContext。
 
-        Called by CLI one-shot commands so that stop/resume/fix can address
-        runs that were started in a previous process.  Active asyncio Tasks are
-        not restored (main_task stays None), which is correct: the original
-        process is gone.  State and scheduler are fully reconstructed so that
-        fix / resume can work normally.
+        供 CLI 一次性子命令（stop / resume / fix）调用，使其能操作上一进程
+        启动的 run。重建后 main_task 为 None（原进程已消失），调度器和状态
+        管理器均完整重建，fix / resume 可正常工作。
+
+        A1 修复：加载 state.json 后立即调用 ``sm.demote_orphans_sync()``，
+        将上一进程崩溃遗留的 RUNNING task/step/pipeline 全部复位为 FAILED，
+        确保 resume 可正确识别并重调度。
         """
         runs_root = storage.get_runs_root(self.workspace)
         if not runs_root.exists():
@@ -254,7 +330,7 @@ class RunManager:
                 except PipelineError:
                     continue
                 sm = StateManager(run_state)
-                # Demote orphaned RUNNING tasks left by a previous crashed process.
+                # A1：将崩溃遗留的 RUNNING 状态复位为 FAILED
                 sm.demote_orphans_sync()
                 abort_event = asyncio.Event()
                 sched = AsyncScheduler(spec, sm, self.workspace, abort_event, self._global_sem)
@@ -268,34 +344,52 @@ class RunManager:
                 )
                 self._runs[run_id] = ctx
 
+    # ─── 内部工具方法 ─────────────────────────────────────────────────────────
+
+    def _get_spec(self, pipeline_id: str) -> PipelineSpec:
+        """按 pipeline_id 查找已注册 spec，不存在则抛出 PipelineError。"""
+        if pipeline_id not in self._registry:
+            raise PipelineError(
+                f"pipeline '{pipeline_id}' 未加载 — 请先执行 'load <path>'",
+                pipeline_id=pipeline_id,
+            )
+        return self._registry[pipeline_id]
+
     def _resolve_run(self, ref: str) -> RunContext:
-        """Resolve ref as run_id first, then as pipeline_id."""
+        """将 ref 解析为 RunContext：优先作为 run_id，其次作为 pipeline_id。"""
         if ref in self._runs:
             return self._runs[ref]
-        # Try pipeline_id: must be unambiguous
+        # 按 pipeline_id 查找：必须唯一
         matching = [ctx for ctx in self._runs.values() if ctx.pipeline_id == ref]
         if len(matching) == 1:
             return matching[0]
         if len(matching) > 1:
             run_ids = [ctx.run_id for ctx in matching]
             raise PipelineError(
-                f"ambiguous: '{ref}' matches multiple active runs {run_ids}. "
-                "Please use run_id instead of pipeline_id.",
+                f"'{ref}' 匹配多个活跃 run {run_ids}，请使用 run_id 而非 pipeline_id",
                 pipeline_id=ref,
             )
-        raise PipelineError(f"no run found for ref '{ref}'")
+        raise PipelineError(f"未找到 run '{ref}'")
 
     def _parse_task_locator(self, ctx: RunContext, locator: str) -> tuple[str, str]:
-        """Parse 'step_id/task_id' or search for task_id across all steps."""
+        """解析 'step_id/task_id' 格式，或在所有 step 中搜索 task_id。"""
         if "/" in locator:
             parts = locator.split("/", 1)
             return parts[0], parts[1]
-        # Search all steps for the task_id
         for step in ctx.pipeline_spec.steps:
             for task in step.tasks:
                 if task.id == locator:
                     return step.id, task.id
         raise PipelineError(
-            f"task '{locator}' not found in pipeline '{ctx.pipeline_id}'",
+            f"task '{locator}' 在 pipeline '{ctx.pipeline_id}' 中未找到",
             pipeline_id=ctx.pipeline_id,
         )
+
+    def _find_task_spec(self, ctx: RunContext, step_id: str, task_id: str):
+        """查找指定 task 的 TaskSpec，未找到返回 None。"""
+        for step in ctx.pipeline_spec.steps:
+            if step.id == step_id:
+                for task in step.tasks:
+                    if task.id == task_id:
+                        return task
+        return None

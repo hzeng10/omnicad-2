@@ -1,3 +1,13 @@
+"""插件加载器：在运行时从点分路径动态加载 BaseTask 子类。
+
+设计原则
+--------
+- **解耦**：引擎只依赖 ``BaseTask`` 接口，不直接导入任何业务代码。
+- **快速失败**：模块不存在、类名不存在、非 BaseTask 子类，三种情况均立即抛出
+  ``PipelineError``，错误消息精确指向失败原因。
+- **B7 兼容**：调度器的 ``_dispatch_task`` 捕获所有异常（包括 ``PipelineError``），
+  因此本模块抛出的错误会被自动转为 task 的 FAILED 状态，不会崩溃整条 pipeline。
+"""
 from __future__ import annotations
 
 import importlib
@@ -8,17 +18,20 @@ from pipeline_engine.core.errors import PipelineError
 
 
 def load_task_class(dotted_path: str) -> type[BaseTask]:
-    """Dynamically load a BaseTask subclass from a dotted module path.
+    """从点分模块路径动态加载 BaseTask 子类，返回类对象（非实例）。
 
-    Args:
-        dotted_path: e.g. "mypackage.tasks.MyTask"
+    Parameters
+    ----------
+    dotted_path:
+        格式为 ``module.path.ClassName``，例如 ``mypackage.tasks.ParseDXF``。
 
-    Returns:
-        The task class (not an instance).
-
-    Raises:
-        PipelineError if the module can't be imported, the class doesn't exist,
-        or the class is not a BaseTask subclass.
+    Raises
+    ------
+    PipelineError
+        - 路径格式不含 ``.``（无法拆分模块名与类名）
+        - 模块无法导入（ImportError）
+        - 类名在模块中不存在
+        - 类不是 BaseTask 的子类
     """
     if "." not in dotted_path:
         raise PipelineError(
@@ -53,6 +66,16 @@ def instantiate_task(
     task_id: str,
     config: dict[str, Any],
 ) -> BaseTask:
-    """Load and instantiate a task plugin."""
+    """加载并实例化任务插件。
+
+    Parameters
+    ----------
+    dotted_path:
+        任务类的点分路径（来自 YAML ``plugin`` 字段）。
+    task_id:
+        任务 ID，用于构造实例和错误信息。
+    config:
+        任务静态配置（来自 YAML ``config`` 字段）。
+    """
     cls = load_task_class(dotted_path)
     return cls(task_id=task_id, config=config)

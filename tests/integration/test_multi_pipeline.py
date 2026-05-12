@@ -113,22 +113,37 @@ async def test_pipeline_id_resolves_single_run(tmp_path):
     assert resolved.run_id == run_id
 
 
-async def test_pipeline_id_ambiguous_with_multiple_runs(tmp_path):
-    """pipeline_id raises PipelineError when multiple runs exist for same pipeline."""
+async def test_start_run_rejects_while_active(tmp_path):
+    """A3 修复：pipeline 已有活跃 run 时，start_run 应拒绝并抛 PipelineError。"""
     rm = RunManager(tmp_path)
     p = _write_yaml(tmp_path, "dup_pipe", sleep=1.0)
     await rm.load(p)
 
     run1 = await rm.start_run("dup_pipe")
-    run2 = await rm.start_run("dup_pipe")
 
-    with pytest.raises(PipelineError, match="ambiguous"):
-        rm._resolve_run("dup_pipe")
+    # 第二次 start_run 应触发 A3 重入保护
+    with pytest.raises(PipelineError):
+        await rm.start_run("dup_pipe")
 
     # Cleanup
     rm._runs[run1].abort_event.set()
-    rm._runs[run2].abort_event.set()
-    await asyncio.gather(rm._runs[run1].main_task, rm._runs[run2].main_task)
+    await rm._runs[run1].main_task
+
+
+async def test_pipeline_id_ambiguous_with_multiple_completed_runs(tmp_path):
+    """两个已完成的 run 共用同一 pipeline_id 时，_resolve_run 应报 ambiguous。"""
+    rm = RunManager(tmp_path)
+    p = _write_instant_yaml(tmp_path, "dup_pipe2")
+    await rm.load(p)
+
+    run1 = await rm.start_run("dup_pipe2")
+    await rm._runs[run1].main_task  # 等待完成
+
+    run2 = await rm.start_run("dup_pipe2")
+    await rm._runs[run2].main_task  # 等待完成
+
+    with pytest.raises(PipelineError, match="匹配多个"):
+        rm._resolve_run("dup_pipe2")
 
 
 async def test_run_id_always_resolves(tmp_path):

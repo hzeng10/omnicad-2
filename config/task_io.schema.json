@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hzeng10/omnicad-2/config/task_io.schema.json",
+  "title": "Task I/O Schema",
+  "description": "Pipeline DAG 引擎中 task 输入/输出 JSON 文件的格式规范",
+
+  "$comment": "本文件定义通用约定和内置 schema。业务任务可通过 BaseTask.InputModel / OutputModel 声明 Pydantic 模型实现自定义强类型校验。",
+
+  "definitions": {
+    "BaseInput": {
+      "title": "通用输入格式",
+      "description": "所有 task 的 input.json 均为 JSON 对象；键名规则：上游 task/step 数据以其 ID 为键注入。",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "__meta__": {
+          "type": "object",
+          "description": "（保留字段）引擎保留的元信息，任务代码不应依赖此字段",
+          "additionalProperties": true
+        }
+      },
+      "examples": [
+        {
+          "raw_data": { "items": [1, 2, 3] },
+          "step_a": {
+            "task1": { "result": "ok" }
+          }
+        }
+      ]
+    },
+
+    "BaseOutput": {
+      "title": "通用输出格式",
+      "description": "所有 task 的 output.json 均为 JSON 对象；键名由业务任务自定义。",
+      "type": "object",
+      "additionalProperties": true,
+      "examples": [
+        { "status": "success", "count": 42 },
+        { "output_path": "/data/result.csv", "rows_processed": 1000 }
+      ]
+    },
+
+    "StepOutput": {
+      "title": "Step 输出聚合格式（manual_data）",
+      "description": "skip=true 的 step 使用 manual_data/<step_id>/output.json 提供预置输出。格式与 BaseOutput 相同，但通常按 task_id 分组。",
+      "type": "object",
+      "additionalProperties": true,
+      "examples": [
+        {
+          "task1": { "result": "manual_result_1" },
+          "task2": { "result": "manual_result_2" }
+        }
+      ]
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/definitions/BaseInput" },
+    { "$ref": "#/definitions/BaseOutput" }
+  ],
+
+  "$defs": {
+    "ProgressReport": {
+      "title": "进度更新格式（内存消息，非文件）",
+      "description": "任务通过 await progress(value) 推送的进度值，范围 0–100。不对应磁盘文件。",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    }
+  },
+
+  "x-conventions": {
+    "task_io_directory": "<workspace>/.pipeline_runs/<pipeline_id>/<run_id>/<step_id>/<task_id>/",
+    "files": {
+      "input.json": "任务执行前由引擎写入；内容为 BaseInput 格式",
+      "output.json": "任务成功后由引擎写入；内容为 BaseOutput 格式（原子写入 .tmp → os.replace）",
+      "log.txt": "（可选）任务执行日志，由任务代码自行写入"
+    },
+    "data_flow": {
+      "depends_on": "step 内上游 task 的 output.json 以其 task_id 为键注入下游 inputs",
+      "depends_on_steps": "上游 step 的叶子 task 的 output.json 以 step_id 为键聚合注入下游 inputs",
+      "manual_data": "skip=true 的 step 使用 manual_data/<step_id>/output.json 直接注入下游 inputs"
+    },
+    "recovery": {
+      "fix_output": "fix --output 将用户提供的 JSON 写入 output.json，任务状态变为 RECOVERED",
+      "fix_input": "fix --input 替换 input.json，任务状态复位为 PENDING，等待 resume 重新调度"
+    }
+  }
+}

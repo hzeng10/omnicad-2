@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hzeng10/omnicad-2/config/pipeline.schema.json",
+  "title": "Pipeline YAML Schema",
+  "description": "Pipeline DAG 引擎的 YAML 配置文件格式规范（版本 1.0）",
+  "type": "object",
+  "required": ["version", "pipeline", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema 版本号，当前固定为 \"1.0\""
+    },
+    "pipeline": {
+      "$ref": "#/$defs/PipelineMeta",
+      "description": "Pipeline 全局元信息"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/StepSpec" },
+      "description": "步骤列表，按数组顺序或 depends_on_steps 声明的拓扑顺序执行"
+    }
+  },
+  "$defs": {
+    "PipelineMeta": {
+      "type": "object",
+      "required": ["id", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Pipeline 唯一 ID（小写字母开头，仅含小写字母/数字/下划线）"
+        },
+        "name": {
+          "type": "string",
+          "description": "Pipeline 可读名称"
+        },
+        "description": {
+          "type": "string",
+          "description": "Pipeline 描述（可选）"
+        },
+        "max_parallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8,
+          "description": "进程级最大并发 task 数，各 step 可通过 max_parallelism 覆盖"
+        }
+      }
+    },
+    "StepSpec": {
+      "type": "object",
+      "required": ["id", "tasks"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Step 唯一 ID（在同一 pipeline 内不能重复）"
+        },
+        "name": {
+          "type": "string",
+          "description": "Step 可读名称（可选，仅用于展示）"
+        },
+        "skip": {
+          "type": "boolean",
+          "default": false,
+          "description": "若为 true，跳过执行并从 manual_data/<step_id>/output.json 加载预置输出"
+        },
+        "max_parallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "本 step 内最大并发 task 数；未设置时使用 pipeline 级别配置"
+        },
+        "depends_on_steps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "显式声明的上游 step ID 列表；为空时默认依赖数组中的前一个 step"
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/TaskSpec" },
+          "description": "Step 内的 task 列表（至少一个）"
+        }
+      }
+    },
+    "TaskSpec": {
+      "type": "object",
+      "required": ["id", "plugin"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Task 唯一 ID（在同一 step 内不能重复）"
+        },
+        "plugin": {
+          "type": "string",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_.]*\\.[A-Z][a-zA-Z0-9_]*$",
+          "description": "任务实现类的点分路径，如 mypackage.tasks.ParseDXF",
+          "examples": [
+            "mypackage.tasks.ParseDXF",
+            "pipeline_engine.builtin.ManualDataLoader"
+          ]
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Step 内上游 task ID 列表（DAG 依赖，用于控制执行顺序）"
+        },
+        "depends_on_steps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "跨 step 依赖的 step ID 列表；引擎会自动上推到 step 级别确保调度顺序"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "传递给任务构造函数的静态配置字典（不经过数据流路由）"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "静态输入字典，在任务执行前注入到 inputs 参数中"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "version": "1.0",
+      "pipeline": {
+        "id": "my_pipeline",
+        "name": "My Pipeline",
+        "description": "示例 pipeline",
+        "max_parallelism": 4
+      },
+      "steps": [
+        {
+          "id": "step_a",
+          "name": "数据准备",
+          "tasks": [
+            {
+              "id": "fetch_data",
+              "plugin": "mypackage.tasks.FetchData",
+              "config": { "url": "https://example.com/data" }
+            }
+          ]
+        },
+        {
+          "id": "step_b",
+          "name": "数据处理",
+          "tasks": [
+            {
+              "id": "process",
+              "plugin": "mypackage.tasks.Process",
+              "depends_on_steps": ["step_a"],
+              "inputs": { "source": "step_a" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
