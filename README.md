@@ -17,13 +17,29 @@
 
 ---
 
-## 快速开始
+## 安装与环境准备
+
+> Ubuntu 22.04/24.04 的系统 Python 受保护，直接 `pip install` 会报 `externally-managed-environment`。请使用虚拟环境。
 
 ```bash
+cd ~/dev/omnicad-2
+
+# 1. 创建虚拟环境（只需执行一次）
+python3 -m venv .venv
+
+# 2. 激活虚拟环境（每次打开新终端都需要执行）
+source .venv/bin/activate
+
+# 3. 安装项目及依赖
 pip install -e .
+
+# 4. 验证安装
+pipeline_cli --help
 ```
 
-示例 pipeline 位于 `examples/cad_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
+激活后命令行前缀会变为 `(.venv)`，表示已进入虚拟环境。退出虚拟环境执行 `deactivate`。
+
+> 示例 pipeline 位于 `examples/cad_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
 
 ---
 
