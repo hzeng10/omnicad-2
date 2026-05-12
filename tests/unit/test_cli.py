@@ -20,6 +20,7 @@ def _make_yaml(tmp_path: Path, pid: str, plugin: str = "tests.unit.test_cli.Echo
         pipeline:
           id: {pid}
           name: "CLI Test {pid}"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -100,20 +101,20 @@ def test_list_empty_workspace(tmp_path):
 def test_run_starts_pipeline(tmp_path):
     yaml_p = _make_yaml(tmp_path, "run_pipe")
     runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
-    result = runner.invoke(app, ["run", "run_pipe", "--workspace", str(tmp_path), "--wait"])
+    result = runner.invoke(app, ["start", "run_pipe", "--workspace", str(tmp_path), "--wait"])
     assert result.exit_code == 0
     assert "run_pipe" in result.output
 
 
 def test_run_unknown_pipeline(tmp_path):
-    result = runner.invoke(app, ["run", "no_such_pipe", "--workspace", str(tmp_path)])
+    result = runner.invoke(app, ["start", "no_such_pipe", "--workspace", str(tmp_path)])
     assert result.exit_code != 0
 
 
 def test_run_with_wait_shows_status(tmp_path):
     yaml_p = _make_yaml(tmp_path, "waiter_pipe")
     runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
-    result = runner.invoke(app, ["run", "waiter_pipe", "--workspace", str(tmp_path), "--wait"])
+    result = runner.invoke(app, ["start", "waiter_pipe", "--workspace", str(tmp_path), "--wait"])
     assert result.exit_code == 0
     # Should print run_id and final status
     assert "Started:" in result.output
@@ -142,7 +143,7 @@ def test_stop_known_run(tmp_path):
     yaml_p = _make_yaml(tmp_path, "stop_pipe")
     runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
     # Run with --wait so the run_id is in the registry on disk
-    run_result = runner.invoke(app, ["run", "stop_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_result = runner.invoke(app, ["start", "stop_pipe", "--workspace", str(tmp_path), "--wait"])
     assert run_result.exit_code == 0
     # Extract run_id from "Started: <run_id> ..."
     run_id = run_result.output.split("Started: ")[1].split()[0]
@@ -161,7 +162,7 @@ def test_resume_unknown_run(tmp_path):
 def test_resume_completed_run(tmp_path):
     yaml_p = _make_yaml(tmp_path, "res_pipe")
     runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
-    run_result = runner.invoke(app, ["run", "res_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_result = runner.invoke(app, ["start", "res_pipe", "--workspace", str(tmp_path), "--wait"])
     run_id = run_result.output.split("Started: ")[1].split()[0]
     result = runner.invoke(app, ["resume", run_id, "--workspace", str(tmp_path)])
     assert result.exit_code == 0
@@ -183,7 +184,7 @@ def test_fix_output_on_completed_task(tmp_path):
     import json as _json
     yaml_p = _make_yaml(tmp_path, "fix_pipe")
     runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
-    run_result = runner.invoke(app, ["run", "fix_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_result = runner.invoke(app, ["start", "fix_pipe", "--workspace", str(tmp_path), "--wait"])
     run_id = run_result.output.split("Started: ")[1].split()[0]
 
     out_file = tmp_path / "fixed.json"
@@ -194,7 +195,43 @@ def test_fix_output_on_completed_task(tmp_path):
         "--workspace", str(tmp_path),
     ])
     assert result.exit_code == 0
-    assert "RECOVERED" in result.output
+    assert "FIXED" in result.output
+
+
+# ─── start / run rename ───────────────────────────────────────────────────────
+
+def test_start_renamed_from_run(tmp_path):
+    yaml_p = _make_yaml(tmp_path, "start_pipe")
+    runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
+    result = runner.invoke(app, ["start", "start_pipe", "--workspace", str(tmp_path), "--wait"])
+    assert result.exit_code == 0
+    assert "start_pipe" in result.output
+
+
+def test_run_command_no_longer_exists(tmp_path):
+    result = runner.invoke(app, ["run", "any_pipe", "--workspace", str(tmp_path)])
+    assert result.exit_code != 0
+
+
+# ─── list --pipeline / --instance ─────────────────────────────────────────────
+
+def test_list_pipeline_shows_type(tmp_path):
+    yaml_p = _make_yaml(tmp_path, "type_pipe")
+    runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
+    result = runner.invoke(app, ["list", "--pipeline", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "type_pipe" in result.output
+    assert "测试" in result.output
+
+
+def test_list_instance_shows_status(tmp_path):
+    yaml_p = _make_yaml(tmp_path, "inst_pipe")
+    runner.invoke(app, ["load", str(yaml_p), "--workspace", str(tmp_path)])
+    runner.invoke(app, ["start", "inst_pipe", "--workspace", str(tmp_path), "--wait"])
+    result = runner.invoke(app, ["list", "--instance", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "inst_pipe" in result.output
+    assert "success" in result.output
 
 
 # ─── max_parallelism validation ───────────────────────────────────────────────
@@ -207,6 +244,7 @@ def test_lint_invalid_max_parallelism(tmp_path):
         pipeline:
           id: bad_pipe
           name: "Bad"
+          type: "测试"
           max_parallelism: 0
         steps:
           - id: s1

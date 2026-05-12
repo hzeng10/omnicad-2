@@ -26,7 +26,7 @@
   "$defs": {
     "PipelineMeta": {
       "type": "object",
-      "required": ["id", "name"],
+      "required": ["id", "name", "type"],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -37,6 +37,11 @@
         "name": {
           "type": "string",
           "description": "Pipeline 可读名称"
+        },
+        "type": {
+          "type": "string",
+          "description": "Pipeline 业务类型（必填），例如：CAD图识别及算量 / CAD生成 / AI数据工程",
+          "examples": ["CAD图识别及算量", "CAD生成", "AI数据工程"]
         },
         "description": {
           "type": "string",
@@ -140,6 +145,7 @@
       "pipeline": {
         "id": "my_pipeline",
         "name": "My Pipeline",
+        "type": "AI数据工程",
         "description": "示例 pipeline",
         "max_parallelism": 4
       },

@@ -42,8 +42,8 @@ async def test_failure_then_fix_then_resume(tmp_path, fail_cable):
 
     ts = state.steps["recognize"].tasks["rec_cable"]
     ts_fresh = await rm._runs[run_id].state_manager.get_task_state("recognize", "rec_cable")
-    assert ts_fresh.status == Status.RECOVERED
-    assert ts_fresh.recovered_by is not None
+    assert ts_fresh.status == Status.FIXED
+    assert ts_fresh.fixed_by is not None
 
     # resume
     await rm.resume(run_id)

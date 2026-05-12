@@ -42,7 +42,7 @@ class LatchedTask(BaseTask):
 def _build_spec(pipeline_id: str = "abort_pipe") -> PipelineSpec:
     return PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id=pipeline_id, name="T"),
+        pipeline=PipelineMeta(id=pipeline_id, name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.QuickTask"),
@@ -87,7 +87,7 @@ async def test_abort_mid_run_pauses_pending_tasks(tmp_path):
 
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="abort_pipe", name="T"),
+        pipeline=PipelineMeta(id="abort_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.QuickTask"),
@@ -119,7 +119,7 @@ async def test_resume_failed_tasks_only_by_default(tmp_path):
     """resume resets Failed tasks; Paused tasks stay Paused without --include-paused."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="resume_pipe", name="T"),
+        pipeline=PipelineMeta(id="resume_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t_fail", plugin=f"{__name__}.QuickTask"),
@@ -143,7 +143,7 @@ async def test_resume_failed_tasks_only_by_default(tmp_path):
 
     assert reset_fail is True
     assert reset_paused is False
-    assert (await sm.get_task_state("s1", "t_fail")).status == Status.PENDING
+    assert (await sm.get_task_state("s1", "t_fail")).status == Status.NEW
     assert (await sm.get_task_state("s1", "t_paused")).status == Status.PAUSED
 
 
@@ -151,7 +151,7 @@ async def test_resume_include_paused(tmp_path):
     """--include-paused resets both Failed and Paused tasks."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="resume_pipe", name="T"),
+        pipeline=PipelineMeta(id="resume_pipe", name="T", type="测试"),
         steps=[StepSpec(id="s1", tasks=[
             TaskSpec(id="t1", plugin=f"{__name__}.QuickTask"),
         ])],
@@ -168,7 +168,7 @@ async def test_resume_include_paused(tmp_path):
 
     reset = await sm.reset_for_resume("s1", "t1", include_paused=True)
     assert reset is True
-    assert (await sm.get_task_state("s1", "t1")).status == Status.PENDING
+    assert (await sm.get_task_state("s1", "t1")).status == Status.NEW
 
 
 async def test_run_id_stable_across_resume(tmp_path):

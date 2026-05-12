@@ -13,12 +13,12 @@
 ------------------
 ::
 
-    PENDING → RUNNING → SUCCESS
+    NEW     → RUNNING → SUCCESS
                       → FAILED
                       → PAUSED   (abort_event 触发时)
-    FAILED  → PENDING  (reset_for_resume)
-    PAUSED  → PENDING  (reset_for_resume --include-paused)
-    任意    → RECOVERED (fix --output 后调用 recover_task)
+    FAILED  → NEW      (reset_for_resume)
+    PAUSED  → NEW      (reset_for_resume --include-paused)
+    任意    → FIXED    (fix --output 后调用 recover_task)
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class StateManager:
     async def init_step(self, step_id: str, task_ids: list[str]) -> None:
         """初始化步骤及其任务的状态记录。
 
-        若步骤已存在，则保留各任务的现有状态（RECOVERED/SKIPPED 等终态不会被重置），
+        若步骤已存在，则保留各任务的现有状态（FIXED/SKIPPED 等终态不会被重置），
         以支持 resume 场景中跳过已完成的任务。
         """
         async with self._lock:
@@ -83,7 +83,7 @@ class StateManager:
             tasks = {}
             for tid in task_ids:
                 if existing and tid in existing.tasks:
-                    # 保留终态（SUCCESS、RECOVERED、SKIPPED 等），避免 resume 时重置已完成任务
+                    # 保留终态（SUCCESS、FIXED、SKIPPED 等），避免 resume 时重置已完成任务
                     tasks[tid] = existing.tasks[tid]
                 else:
                     tasks[tid] = TaskState(id=tid)
@@ -164,7 +164,7 @@ class StateManager:
         """将任务状态置为 SUCCESS 并更新文件路径信息。
 
         守卫：仅当任务处于 RUNNING 时才执行迁移。
-        若任务已被 pause 或已处于终态（如 PAUSED / RECOVERED），则静默忽略，
+        若任务已被 pause 或已处于终态（如 PAUSED / FIXED），则静默忽略，
         防止线程池任务完成时覆盖已暂停的状态（B2/B5 修复）。
         """
         async with self._lock:
@@ -192,12 +192,12 @@ class StateManager:
     ) -> None:
         """将任务状态置为 FAILED 并记录错误信息及堆栈。
 
-        守卫：仅当任务处于 RUNNING 或 PENDING 时才执行迁移，
-        避免覆盖已处于终态（SUCCESS / RECOVERED / SKIPPED）或 PAUSED 的任务（B5 修复）。
+        守卫：仅当任务处于 RUNNING 或 NEW 时才执行迁移，
+        避免覆盖已处于终态（SUCCESS / FIXED / SKIPPED）或 PAUSED 的任务（B5 修复）。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
-            if task.status not in (Status.RUNNING, Status.PENDING):
+            if task.status not in (Status.RUNNING, Status.NEW):
                 # 终态或 PAUSED 任务不可被 fail 覆盖
                 return
             task.status = Status.FAILED
@@ -208,10 +208,10 @@ class StateManager:
             self._persist()
 
     async def pause_task(self, step_id: str, task_id: str) -> None:
-        """将 RUNNING 或 PENDING 的任务置为 PAUSED（abort_event 触发时使用）。"""
+        """将 RUNNING 或 NEW 的任务置为 PAUSED（abort_event 触发时使用）。"""
         async with self._lock:
             task = self._task(step_id, task_id)
-            if task.status in (Status.RUNNING, Status.PENDING):
+            if task.status in (Status.RUNNING, Status.NEW):
                 task.status = Status.PAUSED
                 self._persist()
 
@@ -234,33 +234,33 @@ class StateManager:
         step_id: str,
         task_id: str,
         output_path: str,
-        recovered_by: str,
+        fixed_by: str,
     ) -> None:
-        """将任务标记为 RECOVERED（fix --output 成功后调用）。
+        """将任务标记为 FIXED（fix --output 成功后调用）。
 
-        ``recovered_by`` 记录补齐操作的审计信息（如 "fix@<timestamp>"）。
-        RECOVERED 状态的任务在 resume 时会被 already_done 集合跳过，
+        ``fixed_by`` 记录补齐操作的审计信息（如 "fix@<timestamp>"）。
+        FIXED 状态的任务在 resume 时会被 already_done 集合跳过，
         不会重新执行，但其 output.json 可供下游正常消费。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
-            task.status = Status.RECOVERED
+            task.status = Status.FIXED
             task.output_path = output_path
-            task.recovered_by = recovered_by
+            task.fixed_by = fixed_by
             task.finished_at = _now()
             task.error = None
             task.stack_trace = None
             self._persist()
 
     async def replace_task_input(self, step_id: str, task_id: str) -> None:
-        """将任务重置为 PENDING，供 fix --input 后调用（C1 修复：替代直接访问 _state）。
+        """将任务重置为 NEW，供 fix --input 后调用（C1 修复：替代直接访问 _state）。
 
         fix --input 操作将新的 input.json 写入磁盘后，需要把任务状态
-        复位为 PENDING 以便 resume 重新调度。
+        复位为 NEW 以便 resume 重新调度。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
-            task.status = Status.PENDING
+            task.status = Status.NEW
             task.error = None
             task.stack_trace = None
             self._persist()
@@ -268,7 +268,7 @@ class StateManager:
     async def reset_for_resume(
         self, step_id: str, task_id: str, include_paused: bool = False
     ) -> bool:
-        """将 FAILED（或可选 PAUSED）的任务复位为 PENDING 以供重调度。
+        """将 FAILED（或可选 PAUSED）的任务复位为 NEW 以供重调度。
 
         Returns
         -------
@@ -281,7 +281,7 @@ class StateManager:
             if include_paused:
                 eligible.add(Status.PAUSED)
             if task.status in eligible:
-                task.status = Status.PENDING
+                task.status = Status.NEW
                 task.error = None
                 task.stack_trace = None
                 task.started_at = None

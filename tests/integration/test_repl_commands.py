@@ -31,6 +31,7 @@ def _write_yaml(tmp_path: Path, pid: str, plugin: str) -> Path:
         pipeline:
           id: {pid}
           name: "Test {pid}"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -55,7 +56,7 @@ async def test_run_command_starts_run(tmp_path):
     rm = RunManager(tmp_path)
     yaml_p = _write_yaml(tmp_path, "rp2", "tests.integration.test_repl_commands.QuickTask")
     await rm.load(yaml_p)
-    await _dispatch(rm, "run rp2")
+    await _dispatch(rm, "start rp2")
     assert len(rm._runs) == 1
 
 
@@ -102,6 +103,31 @@ async def test_list_command(tmp_path):
     # should print without error
     await _dispatch(rm, "list")
     await _dispatch(rm, "list --runs")
+
+
+async def test_list_instance_command(tmp_path):
+    rm = RunManager(tmp_path)
+    yaml_p = _write_yaml(tmp_path, "rp7", "tests.integration.test_repl_commands.QuickTask")
+    await rm.load(yaml_p)
+    run_id = await rm.start_run("rp7")
+    ctx = rm._runs[run_id]
+    await ctx.main_task
+    # --instance should not raise and should show the run
+    await _dispatch(rm, "list --instance")
+
+
+async def test_stop_ignores_extra_args(tmp_path):
+    """stop only accepts instance_id — extra flags are silently ignored (REPL just uses args[0])."""
+    rm = RunManager(tmp_path)
+    yaml_p = _write_yaml(tmp_path, "rp8", "tests.integration.test_repl_commands.SlowTask")
+    await rm.load(yaml_p)
+    run_id = await rm.start_run("rp8")
+    await asyncio.sleep(0.05)
+    # Extra flag ignored — only the instance_id matters
+    await _dispatch(rm, f"stop {run_id} --step step_a")
+    ctx = rm._runs[run_id]
+    await ctx.main_task
+    assert ctx.abort_event.is_set()
 
 
 async def test_run_and_inspect_after_completion(tmp_path):

@@ -47,7 +47,7 @@ async def test_all_steps_and_tasks_complete(rm):
 
     for step_id, step_state in state.steps.items():
         for task_id, ts in step_state.tasks.items():
-            assert ts.status in (Status.SUCCESS, Status.RECOVERED, Status.SKIPPED), \
+            assert ts.status in (Status.SUCCESS, Status.FIXED, Status.SKIPPED), \
                 f"{step_id}/{task_id} ended in {ts.status}"
             assert ts.progress == 100
             assert ts.output_path is not None

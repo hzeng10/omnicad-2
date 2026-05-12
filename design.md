@@ -23,7 +23,7 @@
 | CAD 示例 | **作为可演示样板交付**：`examples/cad_pipeline/` 提供 7 个 mock 任务（含 8s、10s 两个长时任务） |
 | 工作目录 | **默认在 CWD 下** `./.pipeline_runs/...`；支持全局 `--workspace <path>` 自定义 |
 | 多 Pipeline | **多实例并行**：单进程内多个 RunContext，各自独立 scheduler / state |
-| 失败修复 | **fix --output 是核心机制**：补齐 output.json → 任务置 RECOVERED → 自动继续下游 |
+| 失败修复 | **fix --output 是核心机制**：补齐 output.json → 任务置 FIXED → 自动继续下游 |
 | Resume 模式 | 默认仅重调度 Failed；`--include-paused` 同时调度 Paused |
 | 测试覆盖率 | ≥ 90% |
 
@@ -118,6 +118,7 @@ version: "1.0"
 pipeline:
   id: cad_cost_estimation          # 唯一标识，正则 [a-z][a-z0-9_]*
   name: "CAD 设备成本汇总"
+  type: "CAD图识别及算量"            # 必填，业务分类标签（用于 list --pipeline 展示）
   description: "..."               # 可选
   max_parallelism: 4               # 全局并发上限；step 级可覆盖
 
@@ -202,6 +203,7 @@ class StepSpec(BaseModel):
 class PipelineMeta(BaseModel):
     id: str
     name: str
+    type: str                        # 必填，业务分类（如"CAD图识别及算量"）
     description: str | None = None
     max_parallelism: int = 8
 
@@ -219,17 +221,20 @@ from datetime import datetime
 from pydantic import BaseModel
 
 class Status(str, Enum):
-    PENDING   = "pending"
+    NEW       = "new"         # 初始/待调度
     RUNNING   = "running"
     PAUSED    = "paused"
     SUCCESS   = "success"
     FAILED    = "failed"
     SKIPPED   = "skipped"     # step-level skip=true
-    RECOVERED = "recovered"   # 手动 fix --output 补齐后的任务状态
+    FIXED     = "fixed"       # 手动 fix --output 补齐后的任务状态
+
+# 向后兼容：旧 state.json 中的 "pending"/"recovered" 在反序列化时自动映射
+# _LEGACY_STATUS_MAP = {"pending": "new", "recovered": "fixed"}
 
 class TaskState(BaseModel):
     id: str
-    status: Status = Status.PENDING
+    status: Status = Status.NEW
     progress: int = 0
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -238,11 +243,11 @@ class TaskState(BaseModel):
     input_path: str | None = None
     output_path: str | None = None
     log_path: str | None = None
-    recovered_by: str | None = None   # 审计：记录 fix 操作信息
+    fixed_by: str | None = None       # 审计：记录 fix 操作信息（原 recovered_by）
 
 class StepState(BaseModel):
     id: str
-    status: Status = Status.PENDING
+    status: Status = Status.NEW
     tasks: dict[str, TaskState] = {}
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -250,12 +255,38 @@ class StepState(BaseModel):
 class PipelineRunState(BaseModel):
     pipeline_id: str
     run_id: str
-    status: Status = Status.PENDING
+    status: Status = Status.NEW
     steps: dict[str, StepState] = {}
     started_at: datetime | None = None
     finished_at: datetime | None = None
     workspace: str
 ```
+
+### 4.3 Task 状态机迁移图
+
+```mermaid
+stateDiagram-v2
+    [*] --> NEW
+    NEW --> RUNNING : dispatch (semaphore acquired)
+    NEW --> FAILED : fail_task (precondition error)
+    NEW --> SKIPPED : step.skip == true (step-level)
+    RUNNING --> SUCCESS : finish_task (output.json written)
+    RUNNING --> FAILED : exception / orphan demotion
+    RUNNING --> PAUSED : abort_event set (graceful)
+    FAILED --> NEW : reset_for_resume
+    PAUSED --> NEW : reset_for_resume --include-paused
+    FAILED --> FIXED : recover_task (fix --output)
+    PAUSED --> FIXED : recover_task (fix --output)
+    NEW --> FIXED : recover_task (fix --output)
+    SUCCESS --> [*]
+    FIXED --> [*]
+    SKIPPED --> [*]
+```
+
+> **说明**：
+> - `recover_task`（等价于"置为 FIXED"）始终允许，可从 NEW / FAILED / PAUSED 进入 FIXED。
+> - SUCCESS / FIXED / SKIPPED 为终态，`_assert_transition` 禁止再迁移。
+> - PAUSED 由调度器 abort_event 路径内部产生；`stop` 命令面只暴露实例级中止。
 
 ---
 
@@ -327,11 +358,13 @@ class RunManager:
 
     async def load(self, yaml_path: Path) -> str
     async def start_run(self, pipeline_id: str, *, step=None, task=None) -> str
-    async def stop(self, run_id: str, *, step=None, task=None) -> None
+    async def stop(self, ref: str) -> None                             # 中止整个实例
     async def resume(self, run_id: str, *, include_paused=False) -> None
     async def fix(self, run_id: str, task_locator: str, *, input_path=None, output_path=None) -> None
-    def list_runs(self) -> list[RunSummary]
-    def get_run(self, ref: str) -> RunContext   # ref = run_id 或 pipeline_id（歧义时报错）
+    def list_pipelines(self) -> list[dict]        # 含 pipeline_id / type / name
+    async def list_instances(self) -> list[dict] # 含 pipeline_id / instance_id / status
+    def list_runs(self) -> list[RunSummary]       # 向后兼容保留
+    def get_run(self, ref: str) -> RunContext      # ref = run_id 或 pipeline_id（歧义时报错）
 ```
 
 ### 6.3 AsyncScheduler（`core/scheduler.py`）
@@ -352,11 +385,13 @@ class RunManager:
 
 | 方法 | 允许的 from 状态 | 其他状态时的行为 |
 |---|---|---|
-| `finish_task` | RUNNING | 静默丢弃（task 已 PAUSED/RECOVERED/SUCCESS） |
-| `fail_task` | RUNNING、PENDING | 静默丢弃（终态或 PAUSED 任务不可被改写） |
+| `finish_task` | RUNNING | 静默丢弃（task 已 PAUSED/FIXED/SUCCESS） |
+| `fail_task` | RUNNING、NEW | 静默丢弃（终态或 PAUSED 任务不可被改写） |
 | `update_progress` | RUNNING | 静默丢弃（任务已停止/暂停时进度无意义） |
-| `recover_task` | 任意 | 始终允许（fix 可覆盖 FAILED/PAUSED/PENDING） |
-| `reset_for_resume` | FAILED（或 +PAUSED） | 仅允许声明的状态，其余无变化 |
+| `recover_task` | 任意 | 始终允许（fix 可覆盖 FAILED/PAUSED/NEW），置为 FIXED |
+| `reset_for_resume` | FAILED（或 +PAUSED） | 仅允许声明的状态，其余无变化，目标状态 NEW |
+
+> 注：`recover_task` 历史名沿用，等价于"将任务置为 FIXED"。
 
 **孤儿 RUNNING 复位**（V3.1 新增）：
 
@@ -413,35 +448,40 @@ pipeline_cli [--workspace PATH] <subcommand>
 ### 7.2 一次性子命令
 
 ```
-pipeline_cli                            # 进入 REPL
+pipeline_cli                                         # 进入 REPL
 pipeline_cli load <path> [<path>...]
-pipeline_cli run <pipeline_id> [--step S] [--task T] [--wait]
+pipeline_cli start <pipeline_id> [--step S] [--task T] [--wait]
 pipeline_cli lint <path>
-pipeline_cli list [--runs]
+pipeline_cli list [--pipeline]                       # 列已注册 pipeline（pipeline_id / type / name）
+pipeline_cli list --instance                         # 列运行实例（pipeline_id / instance_id / status）
+pipeline_cli stop <instance_id>
 pipeline_cli status <ref>
 pipeline_cli inspect <ref> [--step S] [--task T]
 ```
 
-`run` 默认 detach（打印 run_id 即返回）；`--wait` 阻塞等待。
+`start` 默认 detach（打印 run_id 即返回）；`--wait` 阻塞等待。
+
+> **start 与 stop 的对称性**：`start` 支持 `--step/--task` 细粒度启动；`stop` 只接受 instance_id，中止整个 run。task 级 PAUSED 状态由调度器 abort_event 路径内部生产，不作为用户接口。
 
 ### 7.3 REPL 指令
 
 | 指令 | 行为 |
 |---|---|
 | `load <path>` | 解析 YAML → 校验 → 注册 |
-| `list [--runs]` | 列已加载 Pipeline 或所有 run |
-| `run <id> [--step S] [--task T]` | 后台启动，立即返回 run_id |
-| `stop <ref> [--step S] [--task T]` | 触发 abort_event |
+| `list [--pipeline]` | 列已注册 pipeline（pipeline_id / type / name） |
+| `list --instance` | 列运行实例（pipeline_id / instance_id / status） |
+| `start <id> [--step S] [--task T]` | 后台启动，立即返回 run_id |
+| `stop <instance_id>` | 触发 abort_event（中止整个实例） |
 | `resume <ref> [--include-paused]` | 默认仅调度 Failed；加 `--include-paused` 同时调度 Paused |
 | `status <ref>` | Rich 表格输出全貌 |
 | `status --all` | 所有活跃 run 总览 |
 | `status <ref> --watch` | Rich Live 实时刷新（显式触发，避免抢屏） |
 | `inspect <ref> --step S --task T` | 输出 input.json / output.json / log.txt / stack_trace |
-| `fix <ref> --task T --output PATH` | 补齐 output.json → RECOVERED → 自动触发下游 |
-| `fix <ref> --task T --input PATH` | 写入 input.json → Pending，等 resume 调度 |
+| `fix <ref> --task T --output PATH` | 补齐 output.json → FIXED → 自动触发下游 |
+| `fix <ref> --task T --input PATH` | 写入 input.json → New，等 resume 调度 |
 | `exit` | 退出；有活跃 run 时提示 |
 
-非阻塞实现：REPL 主协程跑 `PromptSession.prompt_async()`；`run` 通过 `asyncio.create_task` 派发。
+非阻塞实现：REPL 主协程跑 `PromptSession.prompt_async()`；`start` 通过 `asyncio.create_task` 派发。
 
 ---
 
@@ -463,7 +503,7 @@ pipeline_cli inspect <ref> [--step S] [--task T]
 3. `fix <run_id> --task rec_cable --output ./recover.json`：
    - 用 `OutputModel` 校验（若已声明）；
    - 原子复制为工作目录下的 `recognize/rec_cable/output.json`；
-   - task status → `RECOVERED`，`recovered_by` 记录审计信息；
+   - task status → `FIXED`，`fixed_by` 记录审计信息；
 4. `resume <run_id>`：
    - 调度器检测到 `rec_cable.output.json` 存在 → 依赖就绪；
    - 下游 `aggregate/merge` 被调度，消费补齐产出；
@@ -566,13 +606,13 @@ class RecCableTask(BaseTask):
 # REPL 交互演示
 python -m pipeline_cli
 > load examples/cad_pipeline/pipeline.yaml
-> run cad_cost_estimation
+> start cad_cost_estimation
 > status cad_cost_estimation --watch          # 实时观察进度
 > inspect <run_id> --step recognize --task rec_cable
 
 # 失败恢复演示
 PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_cli
-> run cad_cost_estimation
+> start cad_cost_estimation
 > inspect <run_id> --step recognize --task rec_cable
 > fix <run_id> --task rec_cable --output examples/cad_pipeline/mock_data/recover_cable.json
 > resume <run_id>
@@ -585,7 +625,7 @@ PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_cli
 - ✅ Rich 进度条 0→100 流畅，长时任务动画可见
 - ✅ REPL 运行期间能响应 `status`/`inspect`/`fix`，无卡顿
 - ✅ `status --watch` 不抢屏
-- ✅ `fix --output` + `resume` → RECOVERED → aggregate 顺利完成
+- ✅ `fix --output` + `resume` → FIXED → aggregate 顺利完成
 - ✅ 最终 `aggregate/merge/output.json` 包含 `grand_total`
 
 ---
@@ -633,7 +673,7 @@ PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_cli
 2. **存储与状态**：Storage（`--workspace`）、StateManager → 单测绿
 3. **任务接口与加载**：BaseTask、PluginLoader → 单测绿
 4. **单 run 调度器**：AsyncScheduler、依赖注入（基于 output.json 存在性）、限流 → `test_scheduler` 绿
-5. **skip / fix / resume**：状态转换 + RECOVERED 路径 → `test_fix_command`、`test_abort_resume` 绿
+5. **skip / fix / resume**：状态转换 + FIXED 路径 → `test_fix_command`、`test_abort_resume` 绿
 6. **RunContext / RunManager**：多 run 协调层 → `test_multi_pipeline` 绿
 7. **CLI + REPL**：typer + prompt_toolkit + rich → `test_repl_commands` 绿
 8. **CAD 示例落地**：schemas、tasks、yaml、mock_data、README、recover_cable.json → 手工演示通畅

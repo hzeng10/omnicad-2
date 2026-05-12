@@ -41,6 +41,7 @@ def _write_yaml(tmp_path: Path, pid: str, plugin: str = "tests.integration.test_
         pipeline:
           id: {pid}
           name: "Render Test {pid}"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -72,7 +73,7 @@ def _make_run_state() -> PipelineRunState:
     from pipeline_engine.models.runtime_state import TaskState, StepState
     ts = TaskState(id="t1", status=Status.SUCCESS, progress=100)
     ts_failed = TaskState(id="t2", status=Status.FAILED, progress=50, error="oops")
-    ts_recovered = TaskState(id="t3", status=Status.RECOVERED, progress=100, recovered_by="me@now")
+    ts_recovered = TaskState(id="t3", status=Status.FIXED, progress=100, fixed_by="me@now")
     step = StepState(id="s1", status=Status.SUCCESS, tasks={"t1": ts, "t2": ts_failed, "t3": ts_recovered})
     state = PipelineRunState(
         pipeline_id="test_pipe",
@@ -120,7 +121,7 @@ def test_render_task_detail_with_error(tmp_path):
     from pipeline_engine.models.runtime_state import TaskState
     ts = TaskState(id="t_err", status=Status.FAILED, progress=30,
                    error="something went wrong", stack_trace="Traceback...",
-                   recovered_by=None, input_path=None, output_path=None)
+                   fixed_by=None, input_path=None, output_path=None)
     _render_task_detail("t_err", ts)
 
 
@@ -137,8 +138,8 @@ def test_render_task_detail_with_files(tmp_path):
 
 def test_render_task_detail_recovered():
     from pipeline_engine.models.runtime_state import TaskState
-    ts = TaskState(id="t_rec", status=Status.RECOVERED, progress=100,
-                   recovered_by="fixer@2024-01-01")
+    ts = TaskState(id="t_rec", status=Status.FIXED, progress=100,
+                   fixed_by="fixer@2024-01-01")
     _render_task_detail("t_rec", ts)
 
 
@@ -159,7 +160,7 @@ def test_print_runs_with_active(tmp_path):
     from pipeline_engine.models.runtime_state import PipelineRunState
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="pp", name="PP"),
+        pipeline=PipelineMeta(id="pp", name="PP", type="测试"),
         steps=[StepSpec(id="s", tasks=[TaskSpec(id="t", plugin="x")])],
     )
     run_state = PipelineRunState(pipeline_id="pp", run_id="r1", workspace=str(tmp_path))
@@ -179,7 +180,7 @@ def test_print_runs_with_active(tmp_path):
 async def test_dispatch_bad_shlex(tmp_path):
     rm = RunManager(tmp_path)
     # Unmatched quote — should not raise
-    await _dispatch(rm, "run 'unmatched")
+    await _dispatch(rm, "start 'unmatched")
 
 
 async def test_dispatch_resume_command(tmp_path):
@@ -258,7 +259,7 @@ async def test_dispatch_fix_no_args(tmp_path):
 
 async def test_dispatch_run_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "run")
+    await _dispatch(rm, "start")
 
 
 async def test_run_manager_list_runs_with_entries(tmp_path):
@@ -270,20 +271,6 @@ async def test_run_manager_list_runs_with_entries(tmp_path):
     await ctx.main_task
     runs = rm.list_runs()
     assert any(r["run_id"] == run_id for r in runs)
-
-
-async def test_run_manager_stop_with_step_task(tmp_path):
-    rm = RunManager(tmp_path)
-    yaml_p = _write_yaml(tmp_path, "sst_pipe")
-    await rm.load(yaml_p)
-    run_id = await rm.start_run("sst_pipe")
-    ctx = rm._runs[run_id]
-    await ctx.main_task  # let it finish first
-    # stop with step+task on a finished run shouldn't crash (task is not RUNNING)
-    try:
-        await rm.stop(run_id, step_id="step_a", task_id="t1")
-    except Exception:
-        pass  # state manager may raise on non-running task; that's fine
 
 
 async def test_run_manager_resolve_no_run_raises(tmp_path):
@@ -300,7 +287,7 @@ async def test_run_manager_parse_task_locator_slash(tmp_path):
     from pipeline_engine.models.runtime_state import PipelineRunState
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="tl_pipe", name="TL"),
+        pipeline=PipelineMeta(id="tl_pipe", name="TL", type="测试"),
         steps=[StepSpec(id="s1", tasks=[TaskSpec(id="t1", plugin="x")])],
     )
     run_state = PipelineRunState(pipeline_id="tl_pipe", run_id="r_tl", workspace=str(tmp_path))
@@ -326,7 +313,7 @@ async def test_run_manager_parse_task_locator_search(tmp_path):
     from pipeline_engine.core.errors import PipelineError
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="tls_pipe", name="TLS"),
+        pipeline=PipelineMeta(id="tls_pipe", name="TLS", type="测试"),
         steps=[StepSpec(id="s1", tasks=[TaskSpec(id="t1", plugin="x")])],
     )
     run_state = PipelineRunState(pipeline_id="tls_pipe", run_id="r_tls", workspace=str(tmp_path))
@@ -385,7 +372,7 @@ async def test_run_manager_fix_input_path(tmp_path):
 
     # Task should now be PENDING
     ts = await ctx.state_manager.get_task_state("step_a", "t1")
-    assert ts.status.value == "pending"
+    assert ts.status.value == "new"
 
 
 async def test_run_manager_fix_missing_input_file_raises(tmp_path):

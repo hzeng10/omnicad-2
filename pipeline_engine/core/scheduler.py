@@ -5,7 +5,7 @@
 - 按拓扑排序依次执行 step；同代 step（无相互依赖）可并行运行。
 - step 内依据 task 依赖图，使用 asyncio.gather 并发分发就绪 task。
 - 依赖就绪判定：上游 output.json 文件存在即视为就绪（不依赖状态字段），
-  这样 RECOVERED 任务的 output.json 同样可供下游消费。
+  这样 FIXED 任务的 output.json 同样可供下游消费。
 - 进程级 Semaphore（由 RunManager 注入）限制所有 run 的总并发线程数。
 - abort_event 信号触发有序关闭：不再分发新任务，已在途任务自然完成后
   将状态置为 PAUSED。
@@ -76,7 +76,7 @@ class AsyncScheduler:
             # 检查整体结果：所有 step 均成功/跳过/已恢复才算 SUCCESS
             run_state = await self._sm.get_run_state()
             all_ok = all(
-                step.status in (Status.SUCCESS, Status.SKIPPED, Status.RECOVERED)
+                step.status in (Status.SUCCESS, Status.SKIPPED, Status.FIXED)
                 for step in run_state.steps.values()
             )
             await self._sm.finish_pipeline(success=all_ok)
@@ -129,8 +129,8 @@ class AsyncScheduler:
         import networkx as nx
         task_graph = build_task_graph(step)
 
-        # 仅跳过 RECOVERED / SKIPPED 终态 task；SUCCESS 任务可能需要消费修正后的上游
-        _skip_statuses = (Status.RECOVERED, Status.SKIPPED)
+        # 仅跳过 FIXED / SKIPPED 终态 task；SUCCESS 任务可能需要消费修正后的上游
+        _skip_statuses = (Status.FIXED, Status.SKIPPED)
         pre_state = await self._sm.get_run_state()
         pre_step = pre_state.steps.get(step.id)
         already_done: set[str] = {
@@ -171,7 +171,7 @@ class AsyncScheduler:
         run_state = await self._sm.get_run_state()
         step_state = run_state.steps[step.id]
         success = all(
-            ts.status in (Status.SUCCESS, Status.RECOVERED)
+            ts.status in (Status.SUCCESS, Status.FIXED)
             for ts in step_state.tasks.values()
         )
         await self._sm.finish_step(step.id, success=success)

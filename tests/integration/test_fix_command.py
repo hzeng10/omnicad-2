@@ -74,7 +74,7 @@ async def test_fix_output_recovers_failed_task(tmp_path):
     """fix --output: write output.json + set RECOVERED, then downstream runs."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="fix_pipe", name="T"),
+        pipeline=PipelineMeta(id="fix_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t_fail", plugin=f"{__name__}.FailingTask"),
@@ -101,12 +101,12 @@ async def test_fix_output_recovers_failed_task(tmp_path):
     await sm.recover_task(
         "s1", "t_fail",
         output_path=str(dest),
-        recovered_by="test@now",
+        fixed_by="test@now",
     )
 
     ts = await sm.get_task_state("s1", "t_fail")
-    assert ts.status == Status.RECOVERED
-    assert ts.recovered_by == "test@now"
+    assert ts.status == Status.FIXED
+    assert ts.fixed_by == "test@now"
 
     # Resume: scheduler sees output.json → dispatches s2
     abort2 = asyncio.Event()
@@ -115,7 +115,7 @@ async def test_fix_output_recovers_failed_task(tmp_path):
     # Reset s1 step status to allow scheduler to proceed to s2
     async with sm._lock:
         sm._state.steps["s1"].status = Status.SUCCESS
-        sm._state.status = Status.PENDING
+        sm._state.status = Status.NEW
         sm._persist()
 
     sched2 = AsyncScheduler(spec, sm, tmp_path, abort2, sem2)
@@ -143,7 +143,7 @@ async def test_fix_input_writes_input_json(tmp_path):
     """fix --input: write input.json into task directory."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="fix_pipe", name="T"),
+        pipeline=PipelineMeta(id="fix_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.SuccessTask"),
@@ -163,7 +163,7 @@ async def test_fix_input_writes_input_json(tmp_path):
 
     # task should still be PENDING (fix --input doesn't change status)
     ts = await sm.get_task_state("s1", "t1")
-    assert ts.status == Status.PENDING
+    assert ts.status == Status.NEW
 
     # Verify input was written
     inp = storage.read_json(task_dir / "input.json")
@@ -174,7 +174,7 @@ async def test_fix_output_then_downstream_dependency_satisfied(tmp_path):
     """After fix --output, the output.json file exists → downstream can proceed."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="fix_pipe", name="T"),
+        pipeline=PipelineMeta(id="fix_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="producer", plugin=f"{__name__}.FailingTask"),

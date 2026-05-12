@@ -4,13 +4,13 @@
 ----------
 - ``load``：解析并注册 pipeline YAML 文件。
 - ``lint``：校验 YAML 语法与 DAG 合法性，不执行。
-- ``run``：启动一个或多个 pipeline run（支持 --step / --task 细粒度启动）。
-- ``stop``：中止指定 run（或其中某个 task）。
+- ``start``：启动一个或多个 pipeline run（支持 --step / --task 细粒度启动）。
+- ``stop``：中止指定 pipeline 实例（instance_id）。
 - ``resume``：恢复 FAILED/PAUSED 的 run。
 - ``fix``：向失败任务注入 input 或 output 数据。
 - ``status``：查看 run 的整体进度。
 - ``inspect``：查看 task 的详细信息（输入/输出/日志）。
-- ``list``：列出所有已注册的 pipeline。
+- ``list``：列出已注册 pipeline（--pipeline）或运行实例（--instance）。
 
 修复说明
 --------
@@ -119,8 +119,8 @@ def lint(
         raise typer.Exit(1)
 
 
-@app.command("run")
-def run_cmd(
+@app.command("start")
+def start_cmd(
     ctx: typer.Context,
     pipeline_ids: list[str] = typer.Argument(..., help="要运行的 pipeline ID 列表。"),
     workspace: Optional[Path] = _workspace_option,
@@ -236,12 +236,10 @@ def inspect(
 @app.command()
 def stop(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="run_id 或 pipeline_id。"),
+    ref: str = typer.Argument(..., help="instance_id（run_id）或 pipeline_id。"),
     workspace: Optional[Path] = _workspace_option,
-    step: Optional[str] = typer.Option(None, "--step", "-s"),
-    task: Optional[str] = typer.Option(None, "--task", "-t"),
 ) -> None:
-    """中止指定 run（或其中某个 task）。"""
+    """中止指定 pipeline 实例（整个 run）。"""
     from pipeline_engine.core.run_manager import RunManager
     from pipeline_engine.core.errors import PipelineError
 
@@ -249,7 +247,7 @@ def stop(
         rm = RunManager(_get_workspace(workspace, ctx))
         _reload_registry(rm, restore_runs=True)
         try:
-            await rm.stop(ref, step_id=step, task_id=task)
+            await rm.stop(ref)
             typer.echo(f"Stopped: {ref}")
         except PipelineError as e:
             typer.echo(f"Error: {e}", err=True)
@@ -313,9 +311,9 @@ def fix(
                 input_path=str(input_path) if input_path else None,
             )
             if output_path:
-                typer.echo(f"Fixed (output): task '{task_locator}' → RECOVERED")
+                typer.echo(f"Fixed (output): task '{task_locator}' → FIXED")
             else:
-                typer.echo(f"Fixed (input): task '{task_locator}' input updated → PENDING")
+                typer.echo(f"Fixed (input): task '{task_locator}' input updated → NEW")
         except PipelineError as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1)
@@ -327,19 +325,32 @@ def fix(
 def list_cmd(
     ctx: typer.Context,
     workspace: Optional[Path] = _workspace_option,
+    pipeline_flag: bool = typer.Option(False, "--pipeline", help="列出已注册的 pipeline（默认行为）。"),
+    instance_flag: bool = typer.Option(False, "--instance", help="列出运行实例（pipeline_id / instance_id / status）。"),
 ) -> None:
-    """列出所有已注册的 pipeline。"""
+    """列出已注册的 pipeline（默认）或运行实例（--instance）。"""
     from pipeline_engine.core.run_manager import RunManager
 
     async def _list() -> None:
         rm = RunManager(_get_workspace(workspace, ctx))
-        _reload_registry(rm)
-        pipelines = rm.list_pipelines()
-        if not pipelines:
-            typer.echo("No pipelines loaded.")
-            return
-        for p in pipelines:
-            typer.echo(f"  {p['pipeline_id']:30s}  {p['name']}")
+        _reload_registry(rm, restore_runs=True)
+
+        if instance_flag:
+            instances = await rm.list_instances()
+            if not instances:
+                typer.echo("No instances.")
+                return
+            typer.echo(f"  {'pipeline_id':30s}  {'instance_id':30s}  status")
+            for inst in instances:
+                typer.echo(f"  {inst['pipeline_id']:30s}  {inst['instance_id']:30s}  {inst['status']}")
+        else:
+            pipelines = rm.list_pipelines()
+            if not pipelines:
+                typer.echo("No pipelines loaded.")
+                return
+            typer.echo(f"  {'pipeline_id':30s}  {'type':20s}  name")
+            for p in pipelines:
+                typer.echo(f"  {p['pipeline_id']:30s}  {p.get('type', ''):20s}  {p['name']}")
 
     asyncio.run(_list())
 

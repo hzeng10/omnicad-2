@@ -100,7 +100,7 @@ class BlockingThenAbortTask(BaseTask):
 async def test_single_task_runs(tmp_path):
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T"),
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.InstantTask"),
@@ -120,7 +120,7 @@ async def test_parallel_tasks_run_concurrently(tmp_path):
     sleep_s = 0.3
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T", max_parallelism=4),
+        pipeline=PipelineMeta(id="test_pipe", name="T", max_parallelism=4, type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id=f"t{i}", plugin=f"{__name__}.SlowTask",
@@ -146,7 +146,7 @@ async def test_linear_dependency_respected(tmp_path):
     OrderedTask._order = []
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T"),
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.OrderedTask"),
@@ -164,7 +164,7 @@ async def test_cross_step_dependency_injected(tmp_path):
     """Downstream step task must receive upstream step output in its inputs."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T"),
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="produce", tasks=[
                 TaskSpec(id="source", plugin=f"{__name__}.InstantTask"),
@@ -191,7 +191,7 @@ async def test_cross_step_dependency_injected(tmp_path):
 async def test_failed_task_marks_step_failed(tmp_path):
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T"),
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.FailTask"),
@@ -217,7 +217,7 @@ async def test_abort_stops_new_tasks(tmp_path):
 
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T"),
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="t1", plugin=f"{__name__}.BlockingThenAbortTask"),
@@ -237,7 +237,7 @@ async def test_within_step_output_injected(tmp_path):
     """Downstream task within same step receives upstream task output."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="test_pipe", name="T"),
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", tasks=[
                 TaskSpec(id="producer", plugin=f"{__name__}.InstantTask"),

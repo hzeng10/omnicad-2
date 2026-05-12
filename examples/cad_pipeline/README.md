@@ -23,14 +23,14 @@ The `recognize` step runs 3 tasks in parallel; wall-clock time ≈ 10s (the slow
 python -m pipeline_engine.cli lint examples/cad_pipeline/pipeline.yaml
 
 # Run with blocking wait
-python -m pipeline_engine.cli run cad_cost_estimation \
+python -m pipeline_engine.cli start cad_cost_estimation \
   --workspace /tmp/demo \
   --wait
 
 # Interactive REPL
 python -m pipeline_engine.cli --workspace /tmp/demo
 pipeline> load examples/cad_pipeline/pipeline.yaml
-pipeline> run cad_cost_estimation
+pipeline> start cad_cost_estimation
 pipeline> status cad_cost_estimation --watch    # live Rich table
 pipeline> inspect cad_cost_estimation --step recognize --task rec_cable
 ```
@@ -43,13 +43,13 @@ PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_engine.cli \
   --workspace /tmp/demo_fail
 
 pipeline> load examples/cad_pipeline/pipeline.yaml
-pipeline> run cad_cost_estimation
+pipeline> start cad_cost_estimation
 pipeline> status cad_cost_estimation
 # rec_cable shows FAILED
 
 pipeline> fix cad_cost_estimation --task recognize/rec_cable \
            --output examples/cad_pipeline/mock_data/recover_cable.json
-# rec_cable → RECOVERED
+# rec_cable → FIXED
 
 pipeline> resume cad_cost_estimation
 pipeline> status cad_cost_estimation

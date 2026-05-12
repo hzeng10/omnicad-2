@@ -27,6 +27,7 @@ MINIMAL_YAML = """\
     pipeline:
       id: my_pipeline
       name: "My Pipeline"
+      type: "测试"
     steps:
       - id: step_a
         tasks:
@@ -73,6 +74,7 @@ def test_invalid_id_pattern(tmp_yaml):
         pipeline:
           id: "Bad-ID"
           name: "x"
+          type: "测试"
         steps:
           - id: s1
             tasks:
@@ -89,6 +91,7 @@ def test_duplicate_step_ids(tmp_yaml):
         pipeline:
           id: dup_steps
           name: "X"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -109,6 +112,7 @@ def test_duplicate_task_ids_in_step(tmp_yaml):
         pipeline:
           id: dup_tasks
           name: "X"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -127,6 +131,7 @@ def test_config_and_inputs_preserved(tmp_yaml):
         pipeline:
           id: cfg_pipeline
           name: "C"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -149,6 +154,7 @@ def test_depends_on_preserved(tmp_yaml):
         pipeline:
           id: dep_pipeline
           name: "D"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -168,6 +174,7 @@ def test_empty_steps_rejected(tmp_yaml):
         pipeline:
           id: empty_steps
           name: "E"
+          type: "测试"
         steps: []
     """
     with pytest.raises(PipelineError):

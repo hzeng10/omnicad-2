@@ -18,6 +18,7 @@ def _make_yaml(tmp_path: Path, pid: str) -> Path:
         pipeline:
           id: {pid}
           name: "Cross-process test"
+          type: "测试"
         steps:
           - id: step_a
             tasks:

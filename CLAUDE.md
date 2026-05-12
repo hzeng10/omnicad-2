@@ -24,8 +24,8 @@ A Python 3.10+ CLI tool for orchestrating DAG-based workflows defined in YAML. T
 pip install -e .                                          # install with dev deps
 pytest                                                    # run all tests
 pytest tests/test_scheduler.py::test_parallel_tasks -v   # run a single test
-python -m pipeline_cli run path/to/pipeline.yaml         # execute a pipeline
-python -m pipeline_cli lint path/to/pipeline.yaml        # validate YAML schema
+pipeline_cli start path/to/pipeline.yaml                 # execute a pipeline
+pipeline_cli lint path/to/pipeline.yaml                  # validate YAML schema
 ```
 
 ## Architecture Overview
@@ -40,13 +40,14 @@ Pipeline
 
 ### State machine
 
-Every Pipeline, Step, and Task must implement this exact state machine:
+Every Pipeline, Step, and Task tracks one of these statuses:
 
 ```
-Pending → Running → Success
-                  → Failed
-                  → Paused (user abort)
-         Skipped  (step-level only; requires manual_data pre-check)
+New → Running → Success
+              → Failed
+              → Paused (user abort)
+     Skipped  (step-level only; requires manual_data pre-check)
+     Fixed    (task manually recovered via fix --output)
 ```
 
 State transitions must be atomic: write task result to disk **before** marking it `Success`.
@@ -59,7 +60,7 @@ State transitions must be atomic: write task result to disk **before** marking i
 - **`base_task.py` — BaseTask**: Abstract base that all user tasks must subclass. Exposes `async def execute(self, inputs: dict) -> dict` and a `progress` callback.
 - **`yaml_parser.py`**: Loads and validates pipeline YAML against the Pydantic schema. Builds the internal Pipeline/Step/Task data structures.
 - **`repl.py`**: `prompt_toolkit`-based non-blocking REPL running as an `asyncio` coroutine alongside the scheduler.
-- **`cli.py`**: Entry point; defines subcommands (`load`, `list`, `run`, `stop`, `resume`, `status`, `inspect`, `fix`).
+- **`cli.py`**: Entry point; defines subcommands (`load`, `lint`, `list`, `start`, `stop`, `resume`, `status`, `inspect`, `fix`).
 
 ### Data flow
 
@@ -71,7 +72,7 @@ When a Step is marked `skip: true`, the engine must verify that `./manual_data/<
 
 ### Error recovery (`fix` command)
 
-`fix <task_id> --input path/to/data.json` or `fix <task_id> --output path/to/data.json` writes the supplied file into the workspace and transitions the task from `Failed` → `Pending` so `resume` can re-schedule it.
+`fix <task_id> --input path/to/data.json` or `fix <task_id> --output path/to/data.json` writes the supplied file into the workspace and transitions the task from `Failed` → `New` (input injection) or `Failed` → `Fixed` (output injection), so `resume` can re-schedule it.
 
 ## Code Style
 

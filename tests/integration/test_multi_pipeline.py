@@ -37,6 +37,7 @@ def _write_yaml(tmp_path: Path, pipeline_id: str, sleep: float = 0.2) -> Path:
         pipeline:
           id: {pipeline_id}
           name: "Pipeline {pipeline_id}"
+          type: "测试"
         steps:
           - id: step_a
             tasks:
@@ -56,6 +57,7 @@ def _write_instant_yaml(tmp_path: Path, pipeline_id: str) -> Path:
         pipeline:
           id: {pipeline_id}
           name: "Pipeline {pipeline_id}"
+          type: "测试"
         steps:
           - id: step_a
             tasks:

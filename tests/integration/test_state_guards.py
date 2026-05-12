@@ -48,16 +48,16 @@ async def test_finish_task_from_paused_is_noop(tmp_path):
 
 
 async def test_finish_task_from_recovered_is_noop(tmp_path):
-    """finish_task must not overwrite a RECOVERED task."""
+    """finish_task must not overwrite a FIXED task."""
     sm = _make_sm(tmp_path)
     await _init(sm)
     await sm.start_step("s1")
     await sm.start_task("s1", "t1")
     await sm.fail_task("s1", "t1", error="oops")
-    await sm.recover_task("s1", "t1", output_path="/x/out.json", recovered_by="tester")
+    await sm.recover_task("s1", "t1", output_path="/x/out.json", fixed_by="tester")
     await sm.finish_task("s1", "t1")
     state = await sm.get_run_state()
-    assert state.steps["s1"].tasks["t1"].status == Status.RECOVERED
+    assert state.steps["s1"].tasks["t1"].status == Status.FIXED
 
 
 async def test_finish_task_from_success_is_noop(tmp_path):
@@ -112,10 +112,10 @@ async def test_fail_task_from_recovered_is_noop(tmp_path):
     await sm.start_step("s1")
     await sm.start_task("s1", "t1")
     await sm.fail_task("s1", "t1", error="first fail")
-    await sm.recover_task("s1", "t1", output_path="/x/out.json", recovered_by="tester")
+    await sm.recover_task("s1", "t1", output_path="/x/out.json", fixed_by="tester")
     await sm.fail_task("s1", "t1", error="re-fail attempt")
     state = await sm.get_run_state()
-    assert state.steps["s1"].tasks["t1"].status == Status.RECOVERED
+    assert state.steps["s1"].tasks["t1"].status == Status.FIXED
 
 
 # ─── update_progress guards ───────────────────────────────────────────────────

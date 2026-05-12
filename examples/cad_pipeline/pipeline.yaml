@@ -2,6 +2,7 @@ version: "1.0"
 pipeline:
   id: cad_cost_estimation
   name: "CAD 设备成本汇总（示例）"
+  type: "CAD图识别及算量"
   description: "演示串行 step、step 内并行、长时任务、进度推送、fix 修复"
   max_parallelism: 4
 

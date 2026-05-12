@@ -31,11 +31,12 @@ console = Console()
 
 _HELP = """\
 [bold cyan]可用命令：[/bold cyan]
-  load <path> [<path>...]                       加载 pipeline YAML 文件
-  list [--runs]                                  列出 pipeline（--runs：显示 run 列表）
-  run <id> [<id>...] [--step S] [--task T]       启动一个或多个 run（非阻塞）
-  stop <ref> [--step S --task T]                 中止 run（或单个 task）
-  resume <ref> [--include-paused]                恢复失败的 run
+  load <path> [<path>...]                        加载 pipeline YAML 文件
+  list [--pipeline]                              列出已注册的 pipeline（pipeline_id / type / name）
+  list --instance                                列出运行实例（pipeline_id / instance_id / status）
+  start <id> [<id>...] [--step S] [--task T]    启动一个或多个实例（非阻塞）
+  stop <instance_id>                             中止指定 pipeline 实例
+  resume <ref> [--include-paused]               恢复失败的 run
   status <ref> [--watch]                         查看状态（--watch：持续刷新）
   status --all                                   查看所有活跃 run
   inspect <ref> [--step S] [--task T]            查看 task 详情（输入/输出/日志）
@@ -148,13 +149,13 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
 
         case "list":
             flags = set(args)
-            if "--runs" in flags:
-                _print_runs(rm)
+            if "--instance" in flags or "--runs" in flags:
+                await _print_instances(rm)
             else:
                 _print_pipelines(rm)
 
-        case "run":
-            await _cmd_run(rm, args)
+        case "start":
+            await _cmd_start(rm, args)
 
         case "stop":
             await _cmd_stop(rm, args)
@@ -177,13 +178,13 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
 
 # ─── 各命令处理函数 ───────────────────────────────────────────────────────────
 
-async def _cmd_run(rm: RunManager, args: list[str]) -> None:
-    """run 命令处理器。
+async def _cmd_start(rm: RunManager, args: list[str]) -> None:
+    """start 命令处理器。
 
-    C10 修复：支持多个 pipeline_id，行为与 CLI run 子命令一致。
+    C10 修复：支持多个 pipeline_id，行为与 CLI start 子命令一致。
     """
     if not args:
-        console.print("[yellow]用法:[/yellow] run <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
+        console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
         return
 
     step_id = _get_flag(args, "--step")
@@ -193,7 +194,7 @@ async def _cmd_run(rm: RunManager, args: list[str]) -> None:
     pipeline_ids = [a for a in args if not a.startswith("--") and a != step_id and a != task_id]
 
     if not pipeline_ids:
-        console.print("[yellow]用法:[/yellow] run <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
+        console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
         return
 
     for pipeline_id in pipeline_ids:
@@ -206,13 +207,10 @@ async def _cmd_run(rm: RunManager, args: list[str]) -> None:
 
 async def _cmd_stop(rm: RunManager, args: list[str]) -> None:
     if not args:
-        console.print("[yellow]用法:[/yellow] stop <ref> [--step S --task T]")
+        console.print("[yellow]用法:[/yellow] stop <instance_id>")
         return
     ref = args[0]
-    rest = args[1:]
-    step_id = _get_flag(rest, "--step")
-    task_id = _get_flag(rest, "--task")
-    await rm.stop(ref, step_id=step_id, task_id=task_id)
+    await rm.stop(ref)
     console.print(f"[yellow]已中止:[/yellow] {ref}")
 
 
@@ -276,21 +274,21 @@ async def _cmd_fix(rm: RunManager, args: list[str]) -> None:
 
     await rm.fix(ref, task_locator, input_path=input_path, output_path=output_path)
     if output_path:
-        console.print(f"[green]修复成功 (output):[/green] task '{task_locator}' → RECOVERED")
+        console.print(f"[green]修复成功 (output):[/green] task '{task_locator}' → FIXED")
     else:
-        console.print(f"[green]修复成功 (input):[/green] task '{task_locator}' 输入已更新 → PENDING")
+        console.print(f"[green]修复成功 (input):[/green] task '{task_locator}' 输入已更新 → NEW")
 
 
 # ─── 渲染工具 ────────────────────────────────────────────────────────────────
 
 _STATUS_COLOR = {
-    Status.PENDING:   "dim",
-    Status.RUNNING:   "bold cyan",
-    Status.PAUSED:    "yellow",
-    Status.SUCCESS:   "green",
-    Status.FAILED:    "bold red",
-    Status.SKIPPED:   "blue",
-    Status.RECOVERED: "magenta",
+    Status.NEW:     "dim",
+    Status.RUNNING: "bold cyan",
+    Status.PAUSED:  "yellow",
+    Status.SUCCESS: "green",
+    Status.FAILED:  "bold red",
+    Status.SKIPPED: "blue",
+    Status.FIXED:   "magenta",
 }
 
 
@@ -414,8 +412,8 @@ def _render_task_detail(task_id: str, ts) -> None:
         console.print(f"[red]错误    : {ts.error}[/red]")
     if ts.stack_trace:
         console.print(f"[dim]{ts.stack_trace}[/dim]")
-    if ts.recovered_by:
-        console.print(f"[magenta]恢复方式: {ts.recovered_by}[/magenta]")
+    if ts.fixed_by:
+        console.print(f"[magenta]修复方式: {ts.fixed_by}[/magenta]")
 
     for label, path_attr in (("输入", ts.input_path), ("输出", ts.output_path)):
         if path_attr:
@@ -442,16 +440,32 @@ def _render_task_detail(task_id: str, ts) -> None:
 
 
 def _print_pipelines(rm: RunManager) -> None:
-    """以表格格式输出已注册的 pipeline 列表。"""
+    """以表格格式输出已注册的 pipeline 列表（pipeline_id / type / name）。"""
     pipelines = rm.list_pipelines()
     if not pipelines:
         console.print("[dim]暂无已加载的 pipeline。[/dim]")
         return
     table = Table(box=box.SIMPLE, title="已加载的 Pipeline")
     table.add_column("pipeline_id", style="bold")
+    table.add_column("type")
     table.add_column("name")
     for p in pipelines:
-        table.add_row(p["pipeline_id"], p["name"])
+        table.add_row(p["pipeline_id"], p.get("type", ""), p["name"])
+    console.print(table)
+
+
+async def _print_instances(rm: RunManager) -> None:
+    """以表格格式输出运行实例列表（pipeline_id / instance_id / status）。"""
+    instances = await rm.list_instances()
+    if not instances:
+        console.print("[dim]暂无运行实例。[/dim]")
+        return
+    table = Table(box=box.SIMPLE, title="运行实例（Instances）")
+    table.add_column("pipeline_id")
+    table.add_column("instance_id", style="bold")
+    table.add_column("status", justify="center")
+    for inst in instances:
+        table.add_row(inst["pipeline_id"], inst["instance_id"], _colorize(Status(inst["status"])))
     console.print(table)
 
 

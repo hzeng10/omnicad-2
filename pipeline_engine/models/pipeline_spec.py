@@ -134,6 +134,8 @@ class PipelineMeta(BaseModel):
         pipeline 唯一标识（注册表中的 key）。
     name:
         可读名称。
+    type:
+        pipeline 业务类型，例如 "CAD图识别及算量" / "CAD生成" / "AI数据工程"。必填。
     description:
         可选描述。
     max_parallelism:
@@ -142,6 +144,7 @@ class PipelineMeta(BaseModel):
 
     id: str
     name: str
+    type: str
     description: str | None = None
     max_parallelism: int = 8
 

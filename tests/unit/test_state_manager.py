@@ -29,7 +29,7 @@ def sm(tmp_path) -> StateManager:
 async def test_init_step(sm):
     await sm.init_step("s1", ["t1", "t2"])
     step = await sm.get_step_state("s1")
-    assert step.status == Status.PENDING
+    assert step.status == Status.NEW
     assert set(step.tasks.keys()) == {"t1", "t2"}
 
 
@@ -105,11 +105,11 @@ async def test_recover_task(sm):
     await sm.init_step("s1", ["t1"])
     await sm.start_task("s1", "t1")
     await sm.fail_task("s1", "t1", error="oops")
-    await sm.recover_task("s1", "t1", output_path="/out.json", recovered_by="test_user@ts")
+    await sm.recover_task("s1", "t1", output_path="/out.json", fixed_by="test_user@ts")
     ts = await sm.get_task_state("s1", "t1")
-    assert ts.status == Status.RECOVERED
+    assert ts.status == Status.FIXED
     assert ts.output_path == "/out.json"
-    assert ts.recovered_by == "test_user@ts"
+    assert ts.fixed_by == "test_user@ts"
     assert ts.error is None
 
 
@@ -119,7 +119,7 @@ async def test_reset_for_resume_failed(sm):
     reset = await sm.reset_for_resume("s1", "t1")
     assert reset is True
     ts = await sm.get_task_state("s1", "t1")
-    assert ts.status == Status.PENDING
+    assert ts.status == Status.NEW
     assert ts.error is None
 
 
@@ -140,7 +140,7 @@ async def test_reset_for_resume_paused_included(sm):
     reset = await sm.reset_for_resume("s1", "t1", include_paused=True)
     assert reset is True
     ts = await sm.get_task_state("s1", "t1")
-    assert ts.status == Status.PENDING
+    assert ts.status == Status.NEW
 
 
 async def test_concurrent_writes_dont_lose_updates(sm):

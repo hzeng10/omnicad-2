@@ -31,7 +31,7 @@
 
 ### 2.3 状态管理与干预 (Lifecycle & Intervention)
 *   **中止与恢复**: 
-    *   支持对正在运行的 **Pipeline/Step/Task** 进行实时中止（Abort/Suspend）。
+    *   支持对正在运行的 **Pipeline 实例** 进行实时中止（Abort）。`stop` 命令以 instance_id 为目标，中止整个 run。
     *   支持对已中止或因错停止的流程进行恢复运行（Resume）。
 *   **错误修复 (Manual Fix)**: 
     *   当任务出错停止时，支持用户通过指令手动补充 `input` 数据或直接提供 `output` 结果，以驱动后续流程。
@@ -53,17 +53,19 @@
 | 指令 | 目标 | 说明 |
 | :--- | :--- | :--- |
 | `load <path>` | 系统 | 加载并保存一个 Pipeline 配置文件。 |
-| `list` | 系统 | 列出当前所有已加载及正在运行的 Pipeline。 |
-| `run <id>` | Pipeline/Step/Task | 启动执行。支持参数 `--step` 或 `--task` 进行细粒度启动。 |
-| `stop <id>` | Pipeline/Step/Task | 中止指定的执行单元。 |
+| `list [--pipeline]` | 系统 | 列出已注册的 pipeline（pipeline_id / type / name）。默认行为。 |
+| `list --instance` | 系统 | 列出运行实例（pipeline_id / instance_id / status）。 |
+| `start <id> [--step S] [--task T]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动。 |
+| `stop <instance_id>` | Pipeline 实例 | 中止指定的 pipeline 运行实例（整个 run）。 |
 | `resume <id>` | Pipeline | 恢复被中止或失败的流程。 |
-| `status <id>` | 概览 | 查看指定 Pipeline 的整体进度和结果。 |
+| `status <id>` | 概览 | 查看指定实例的整体进度和结果。 |
 | `inspect <id>` | 详情 | 查看 Step 或 Task 的详细错误、输入输出及进度。 |
-| `fix <id>` | 错误处理 | 手动注入数据以修复出错的任务状态。 |
+| `fix <id>` | 错误处理 | 手动注入数据以修复出错的任务状态（→ Fixed 或 → New）。 |
 
 ### 3.2 交互特性
 *   **非阻塞 REPL**: 任务在后台异步执行，前台 REPL 始终保持响应，允许用户在任务执行时输入查询或干预指令。
 *   **终端风格**: 采用文本行交互，支持命令补全与历史记录。
+*   **stop 范围**: `stop` 始终中止整个实例；task 级 Paused 状态仅由调度器内部产生（abort_event 处理路径），不作为用户接口暴露。
 
 ---
 
@@ -83,7 +85,7 @@
 ## 4. 关键设计约束 (Design Constraints)
 
 1.  **解耦**: 执行引擎不应感知具体的业务逻辑，仅负责任务的调度和数据传递。
-2.  **状态机模型**: 必须为 Pipeline、Step、Task 定义严谨的状态机（Pending, Running, Paused, Success, Failed, Skipped, Recovered）。状态迁移规则：仅允许合法的前置状态（如 `finish_task` 仅从 RUNNING 迁移，其余状态静默忽略），防止并发竞争导致的非法覆盖。
+2.  **状态机模型**: 必须为 Pipeline、Step、Task 定义严谨的状态机（`New`, `Running`, `Paused`, `Success`, `Failed`, `Skipped`, `Fixed`）。状态迁移规则：仅允许合法的前置状态（如 `finish_task` 仅从 RUNNING 迁移，其余状态静默忽略），防止并发竞争导致的非法覆盖。进程重启后，遗留 RUNNING 任务自动复位为 FAILED；`resume` 重新调度 FAILED / PAUSED 任务。
 3.  **线程/协程安全**: 确保 REPL 读取状态时，不会与后台写入状态产生竞态冲突。
 4.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。进程重启后，遗留在 RUNNING 状态的任务必须自动复位为 FAILED，以便 `resume` 重调度。
 5.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。

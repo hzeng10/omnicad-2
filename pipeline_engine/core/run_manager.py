@@ -131,22 +131,10 @@ class RunManager:
 
     # ─── 停止 ─────────────────────────────────────────────────────────────────
 
-    async def stop(
-        self,
-        ref: str,
-        *,
-        step_id: str | None = None,
-        task_id: str | None = None,
-    ) -> None:
-        """触发有序中止：设置 abort_event，不再分发新 task。
-
-        若指定了 step_id/task_id，则只暂停该 task；否则中止整个 run。
-        """
+    async def stop(self, ref: str) -> None:
+        """触发有序中止：设置 abort_event，不再分发新 task。"""
         ctx = self._resolve_run(ref)
-        if task_id and step_id:
-            await ctx.state_manager.pause_task(step_id, task_id)
-        else:
-            ctx.abort_event.set()
+        ctx.abort_event.set()
 
     # ─── 恢复 ─────────────────────────────────────────────────────────────────
 
@@ -180,7 +168,7 @@ class RunManager:
                 await sm.reset_for_resume(step_state.id, tid, include_paused=include_paused)
 
         # C1：使用公共 API 重置 pipeline 状态，避免直接访问内部属性
-        await sm.reset_pipeline_status(Status.PENDING)
+        await sm.reset_pipeline_status(Status.NEW)
 
         # 刷新 abort_event，确保本次 resume 可以被再次 stop
         ctx.abort_event = asyncio.Event()
@@ -252,11 +240,11 @@ class RunManager:
             dest = storage.fix_output(
                 self.workspace, pipeline_id, run_id, step_id, task_id, src
             )
-            recovered_by = f"fix-output@{datetime.now(tz=timezone.utc).isoformat()}"
+            fixed_by = f"fix-output@{datetime.now(tz=timezone.utc).isoformat()}"
             await ctx.state_manager.recover_task(
                 step_id, task_id,
                 output_path=str(dest),
-                recovered_by=recovered_by,
+                fixed_by=fixed_by,
             )
         elif input_path:
             src = Path(input_path)
@@ -274,11 +262,23 @@ class RunManager:
     # ─── 查询 ─────────────────────────────────────────────────────────────────
 
     def list_pipelines(self) -> list[dict[str, Any]]:
-        """列出所有已注册的 pipeline。"""
+        """列出所有已注册的 pipeline（含 type 字段）。"""
         return [
-            {"pipeline_id": pid, "name": spec.pipeline.name}
+            {"pipeline_id": pid, "type": spec.pipeline.type, "name": spec.pipeline.name}
             for pid, spec in self._registry.items()
         ]
+
+    async def list_instances(self) -> list[dict[str, Any]]:
+        """列出所有运行实例的摘要信息（pipeline_id / instance_id / status）。"""
+        result = []
+        for run_id, ctx in self._runs.items():
+            state = await ctx.state_manager.get_run_state()
+            result.append({
+                "pipeline_id": ctx.pipeline_id,
+                "instance_id": run_id,
+                "status": state.status.value,
+            })
+        return result
 
     def list_runs(self) -> list[dict[str, Any]]:
         """列出所有已知 run 的摘要信息。"""

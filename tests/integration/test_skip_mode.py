@@ -55,7 +55,7 @@ async def test_skip_step_with_manual_data(tmp_path):
 
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="skip_pipe", name="T"),
+        pipeline=PipelineMeta(id="skip_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", skip=True, tasks=[
                 TaskSpec(id="t1", plugin="tests.integration.test_scheduler.InstantTask"),
@@ -73,7 +73,7 @@ async def test_skip_step_missing_manual_data_raises(tmp_path):
     """A skipped step with no manual_data must raise PipelineError."""
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="skip_pipe", name="T"),
+        pipeline=PipelineMeta(id="skip_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", skip=True, tasks=[
                 TaskSpec(id="t1", plugin="tests.integration.test_scheduler.InstantTask"),
@@ -92,7 +92,7 @@ async def test_skipped_step_feeds_downstream(tmp_path):
 
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="skip_feed_pipe", name="T"),
+        pipeline=PipelineMeta(id="skip_feed_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", skip=True, tasks=[
                 TaskSpec(id="t1", plugin="tests.integration.test_scheduler.InstantTask"),
@@ -128,7 +128,7 @@ async def test_downstream_step_runs_after_skip(tmp_path):
 
     spec = PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id="skip_pipe", name="T"),
+        pipeline=PipelineMeta(id="skip_pipe", name="T", type="测试"),
         steps=[
             StepSpec(id="s1", skip=True, tasks=[
                 TaskSpec(id="t1", plugin="tests.integration.test_scheduler.InstantTask"),

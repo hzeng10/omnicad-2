@@ -25,6 +25,6 @@ def make_pipeline(
 ) -> PipelineSpec:
     return PipelineSpec(
         version="1.0",
-        pipeline=PipelineMeta(id=pipeline_id, name="Test Pipeline"),
+        pipeline=PipelineMeta(id=pipeline_id, name="Test Pipeline", type="测试"),
         steps=steps or [make_step("step1")],
     )

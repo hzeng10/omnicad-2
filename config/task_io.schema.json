@@ -82,8 +82,8 @@
       "manual_data": "skip=true 的 step 使用 manual_data/<step_id>/output.json 直接注入下游 inputs"
     },
     "recovery": {
-      "fix_output": "fix --output 将用户提供的 JSON 写入 output.json，任务状态变为 RECOVERED",
-      "fix_input": "fix --input 替换 input.json，任务状态复位为 PENDING，等待 resume 重新调度"
+      "fix_output": "fix --output 将用户提供的 JSON 写入 output.json，任务状态变为 FIXED",
+      "fix_input": "fix --input 替换 input.json，任务状态复位为 NEW，等待 resume 重新调度"
     }
   }
 }
