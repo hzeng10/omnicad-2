@@ -196,7 +196,7 @@ def status(
 
     async def _status() -> None:
         rm = RunManager(_get_workspace(workspace, ctx))
-        _reload_registry(rm)
+        _reload_registry(rm, restore_runs=True)
         try:
             state = await rm.get_run_state(ref)
             _render_status(state)
@@ -222,7 +222,7 @@ def inspect(
 
     async def _inspect() -> None:
         rm = RunManager(_get_workspace(workspace, ctx))
-        _reload_registry(rm)
+        _reload_registry(rm, restore_runs=True)
         try:
             state = await rm.get_run_state(ref)
             _render_inspect(state, step, task)
