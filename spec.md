@@ -14,6 +14,7 @@
 
 ### 2.2 多层级执行控制 (Granular Execution)
 *   **加载与持久化**: 支持从指定路径加载 YAML，并在本地保存已加载的 Pipeline 配置与状态。
+*   **instance_id 格式**: 每个运行实例的唯一标识格式为 `<pipeline_id>_yyyyMMdd-hhmmss_<4digit>`（UTC 时间，4 位随机数字），例：`cad_drawing_pipeline_20260513-093024_7392`。由 `start` 命令打印，`stop/resume/status/inspect/fix` 命令接受此格式作为参数。
 *   **多层级结构**:
     *   **Pipeline**: 顶层容器，包含多个步骤。
     *   **Step (步骤)**: 线性执行序列。支持 `skip` 模式，跳过时需从 `./manual_data/` 加载预设输出。

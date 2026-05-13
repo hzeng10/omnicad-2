@@ -39,7 +39,7 @@ pipeline_cli --help
 
 激活后命令行前缀会变为 `(.venv)`，表示已进入虚拟环境。退出虚拟环境执行 `deactivate`。
 
-> 示例 pipeline 位于 `examples/cad_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
+> 示例 pipeline 位于 `pipelines/cad_identify_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
 
 ---
 
@@ -49,16 +49,16 @@ pipeline_cli --help
 
 ```bash
 # 校验 YAML 语法与 DAG 合法性（不执行）
-$ pipeline_cli lint examples/cad_pipeline/pipeline.yaml
-OK — pipeline 'cad_cost_estimation' 校验通过。
+$ pipeline_cli lint pipelines/cad_identify_pipeline/pipeline.yaml
+OK — pipeline 'cad_identify_cost_estimation' 校验通过。
 
 # 注册 pipeline 到本地 registry
-$ pipeline_cli load examples/cad_pipeline/pipeline.yaml --workspace /tmp/cad_demo
-Loaded: cad_cost_estimation
+$ pipeline_cli load pipelines/cad_identify_pipeline/pipeline.yaml --workspace /tmp/cad_demo
+Loaded: cad_identify_cost_estimation
 
 # 列出已注册的 pipeline（含 type 字段）
 $ pipeline_cli list --pipeline --workspace /tmp/cad_demo
-  cad_cost_estimation             CAD图识别及算量           CAD 设备成本汇总（示例）
+  cad_identify_cost_estimation             CAD图识别及算量           CAD 设备成本汇总（示例）
 
 # 列出运行实例（支持跨进程读取）
 $ pipeline_cli list --instance --workspace /tmp/cad_demo
@@ -68,8 +68,8 @@ $ pipeline_cli list --instance --workspace /tmp/cad_demo
 
 ```bash
 # 运行并阻塞等待完成
-$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_cost_estimation --workspace /tmp/cad_demo --wait
-Started: 20260512T083056_948823_1b1fe2  (pipeline: cad_cost_estimation)
+$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_identify_cost_estimation --workspace /tmp/cad_demo --wait
+Started: 20260512T083056_948823_1b1fe2  (pipeline: cad_identify_cost_estimation)
   20260512T083056_948823_1b1fe2: success
 
 # 查看运行状态（支持跨进程：从磁盘恢复上次运行的状态）
@@ -143,8 +143,8 @@ $ pipeline_cli inspect <instance_id> --step aggregate --task merge --workspace /
 ```bash
 # 1. 模拟 rec_cable 任务报错
 $ PIPELINE_DEMO_FAST=1 PIPELINE_DEMO_FAIL=rec_cable \
-  pipeline_cli start cad_cost_estimation --workspace /tmp/cad_demo2 --wait
-Started: 20260512T083200_497976_239806  (pipeline: cad_cost_estimation)
+  pipeline_cli start cad_identify_cost_estimation --workspace /tmp/cad_demo2 --wait
+Started: 20260512T083200_497976_239806  (pipeline: cad_identify_cost_estimation)
 Task recognize/rec_cable failed: RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
   20260512T083200_497976_239806: failed
 
@@ -170,7 +170,7 @@ RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
 # 4. fix --output：注入人工准备好的恢复数据（引擎自动校验 OutputModel 契约）
 $ pipeline_cli fix <instance_id> \
   --task recognize/rec_cable \
-  --output examples/cad_pipeline/mock_data/recover_cable.json \
+  --output pipelines/cad_identify_pipeline/mock_data/recover_cable.json \
   --workspace /tmp/cad_demo2
 Fixed (output): task 'recognize/rec_cable' → FIXED
 
@@ -192,9 +192,9 @@ Pipeline 状态: success
 
 ```bash
 # 只执行 parse_dxf 步骤，其余步骤不触发
-$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_cost_estimation \
+$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_identify_cost_estimation \
   --step parse_dxf --workspace /tmp/cad_step --wait
-Started: 20260512T083250_212844_f15b79  (pipeline: cad_cost_estimation)
+Started: 20260512T083250_212844_f15b79  (pipeline: cad_identify_cost_estimation)
   20260512T083250_212844_f15b79: new    ← pipeline 整体仍是 new（只完成了一步）
 
 $ pipeline_cli status <instance_id> --workspace /tmp/cad_step
@@ -212,14 +212,14 @@ $ pipeline_cli --workspace /tmp/cad_demo
 Pipeline REPL  (输入 help 查看命令)
 工作目录: /tmp/cad_demo
 
-pipeline> load examples/cad_pipeline/pipeline.yaml
-已加载: cad_cost_estimation
+pipeline> load pipelines/cad_identify_pipeline/pipeline.yaml
+已加载: cad_identify_cost_estimation
 
-pipeline> start cad_cost_estimation
-Started: 20260512T...  (pipeline: cad_cost_estimation)
+pipeline> start cad_identify_cost_estimation
+Started: 20260512T...  (pipeline: cad_identify_cost_estimation)
 
 # status --watch 持续刷新进度表格，任务完成后自动退出
-pipeline> status cad_cost_estimation --watch
+pipeline> status cad_identify_cost_estimation --watch
 
 # 查看 task 详情
 pipeline> inspect <instance_id> --step recognize --task rec_cable

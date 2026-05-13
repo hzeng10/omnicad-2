@@ -1,0 +1,17 @@
+{
+  "project_name": "样板间 A",
+  "rooms": [
+    {"name": "主卧", "area_m2": 18.0, "room_type": "bedroom"},
+    {"name": "次卧", "area_m2": 12.0, "room_type": "bedroom"},
+    {"name": "客厅", "area_m2": 25.0, "room_type": "living"},
+    {"name": "厨房", "area_m2": 8.0,  "room_type": "kitchen"},
+    {"name": "卫生间", "area_m2": 5.0, "room_type": "bathroom"}
+  ],
+  "circuits": [
+    {"id": "C1", "load_kw": 3.5, "rooms": ["主卧", "次卧"]},
+    {"id": "C2", "load_kw": 4.0, "rooms": ["客厅"]},
+    {"id": "C3", "load_kw": 2.5, "rooms": ["厨房"]},
+    {"id": "C4", "load_kw": 1.5, "rooms": ["卫生间"]}
+  ],
+  "floor_size_m": [12.0, 8.0]
+}

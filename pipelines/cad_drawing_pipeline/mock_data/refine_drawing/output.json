@@ -1,0 +1,20 @@
+{
+  "_comment": "手动预置数据：step refine_drawing 标记 skip=true，引擎跳过执行直接加载本文件。字段必须符合 RefineDrawingOutput schema。",
+  "drawing_id": "sample_A_refined",
+  "layers": ["FLOOR", "ELEC", "ANNO"],
+  "elements": [
+    {"element_id": "floor_wall_0", "layer": "FLOOR", "annotation": null},
+    {"element_id": "floor_wall_1", "layer": "FLOOR", "annotation": null},
+    {"element_id": "floor_wall_2", "layer": "FLOOR", "annotation": null},
+    {"element_id": "floor_wall_3", "layer": "FLOOR", "annotation": null},
+    {"element_id": "floor_wall_4", "layer": "FLOOR", "annotation": null},
+    {"element_id": "floor_door_0", "layer": "FLOOR", "annotation": "入户门"},
+    {"element_id": "floor_window_0", "layer": "FLOOR", "annotation": "南窗"},
+    {"element_id": "elec_circuit_C1", "layer": "ELEC", "annotation": "主卧/次卧回路"},
+    {"element_id": "elec_circuit_C2", "layer": "ELEC", "annotation": "客厅回路"},
+    {"element_id": "elec_circuit_C3", "layer": "ELEC", "annotation": "厨房回路"},
+    {"element_id": "elec_circuit_C4", "layer": "ELEC", "annotation": "卫生间回路"},
+    {"element_id": "elec_panel_main", "layer": "ELEC", "annotation": "主配电箱"}
+  ],
+  "scale": 100.0
+}

@@ -1,7 +1,7 @@
 version: "1.0"
 pipeline:
-  id: cad_cost_estimation
-  name: "CAD 设备成本汇总（示例）"
+  id: cad_identify_cost_estimation
+  name: "CAD 设备识别与成本汇总（示例）"
   type: "CAD图识别及算量"
   description: "演示串行 step、step 内并行、长时任务、进度推送、fix 修复"
   max_parallelism: 4
@@ -11,12 +11,12 @@ steps:
     name: "解析 DXF"
     tasks:
       - id: read_dxf
-        plugin: examples.cad_pipeline.tasks.ReadDxfTask
+        plugin: pipelines.cad_identify_pipeline.tasks.ReadDxfTask
         config:
-          dxf_path: examples/cad_pipeline/mock_data/sample.dxf
+          dxf_path: pipelines/cad_identify_pipeline/mock_data/sample.dxf
 
       - id: parse_entities
-        plugin: examples.cad_pipeline.tasks.ParseEntitiesTask
+        plugin: pipelines.cad_identify_pipeline.tasks.ParseEntitiesTask
         depends_on: [read_dxf]
 
   - id: split_subgraph
@@ -24,7 +24,7 @@ steps:
     depends_on_steps: [parse_dxf]
     tasks:
       - id: split
-        plugin: examples.cad_pipeline.tasks.SplitSubgraphTask
+        plugin: pipelines.cad_identify_pipeline.tasks.SplitSubgraphTask
         depends_on_steps: [parse_dxf]
 
   - id: recognize
@@ -32,20 +32,20 @@ steps:
     max_parallelism: 3
     tasks:
       - id: rec_building
-        plugin: examples.cad_pipeline.tasks.RecBuildingTask
+        plugin: pipelines.cad_identify_pipeline.tasks.RecBuildingTask
         depends_on_steps: [split_subgraph]
 
       - id: rec_cable
-        plugin: examples.cad_pipeline.tasks.RecCableTask
+        plugin: pipelines.cad_identify_pipeline.tasks.RecCableTask
         depends_on_steps: [split_subgraph]
 
       - id: rec_schematic
-        plugin: examples.cad_pipeline.tasks.RecSchematicTask
+        plugin: pipelines.cad_identify_pipeline.tasks.RecSchematicTask
         depends_on_steps: [split_subgraph]
 
   - id: aggregate
     name: "结果合并去重与成本汇总"
     tasks:
       - id: merge
-        plugin: examples.cad_pipeline.tasks.MergeAndDedupTask
+        plugin: pipelines.cad_identify_pipeline.tasks.MergeAndDedupTask
         depends_on_steps: [recognize]

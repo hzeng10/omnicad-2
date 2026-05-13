@@ -1,0 +1,68 @@
+version: "1.0"
+pipeline:
+  id: cad_drawing_pipeline
+  name: "CAD 自动出图（示例）"
+  type: "cad_drawing"
+  description: >
+    根据需求 JSON 自动生成 CAD 图纸的演示 pipeline。
+    覆盖 BaseTask 全部接口形态：async execute、run_sync、InputModel、OutputModel、
+    progress 推送、skip step + manual_data、PIPELINE_DEMO_FAIL + fix 恢复。
+  max_parallelism: 4
+
+steps:
+  # Step 1: 解析需求 JSON
+  # 接口演示:
+  #   InputModel  = ParseRequirementInput  (从 YAML inputs: 字段注入，Pydantic 校验)
+  #   OutputModel = ParseRequirementOutput
+  #   async execute
+  - id: parse_requirement
+    name: "解析设计需求"
+    tasks:
+      - id: parse_req
+        plugin: pipelines.cad_drawing_pipeline.tasks.ParseRequirement
+        inputs:
+          requirement_path: pipelines/cad_drawing_pipeline/mock_data/requirement.json
+
+  # Step 2: 并发生成平面布局（两个任务无依赖关系，引擎自动并行）
+  # gen_floor:       async execute + progress 推送 (25/50/75/100)
+  # gen_electrical:  run_sync（thread pool，模拟阻塞 CAD SDK 调用）
+  # 跨 step 输入通过 depends_on_steps 声明，使用 inputs["parse_requirement"]["parse_req"] 访问
+  - id: generate_layout
+    name: "并发生成平面与电气布局"
+    tasks:
+      - id: gen_floor
+        plugin: pipelines.cad_drawing_pipeline.tasks.GenerateFloorLayout
+        depends_on_steps: [parse_requirement]
+
+      - id: gen_electrical
+        plugin: pipelines.cad_drawing_pipeline.tasks.GenerateElectricalLayout
+        depends_on_steps: [parse_requirement]
+
+  # Step 3: 合图精修（skip=true）
+  # 引擎不执行本 step 内的任务，直接加载
+  #   <workspace>/manual_data/refine_drawing/output.json
+  # 注意: 若手动数据文件缺失，引擎在 start 时即报错（硬检查）
+  - id: refine_drawing
+    name: "合图与标注（预置 manual_data）"
+    skip: true
+    tasks:
+      - id: refine
+        plugin: pipelines.cad_drawing_pipeline.tasks.RefineDrawing
+        depends_on_steps: [generate_layout]
+
+  # Step 4: 导出 DXF 并校验
+  # export:   async execute + progress；依赖跳过步骤的 manual_data
+  #           InputModel = ExportDXFInput（读取 inputs["refine_drawing"] 结构）
+  # validate: async execute；依赖同 step 内的 export 任务
+  #           InputModel = ValidateDXFInput（读取 inputs["export"] 结构）
+  #           PIPELINE_DEMO_FAIL=validate_dxf → 强制失败 → fix --output 修复演示
+  - id: export_dxf
+    name: "导出 DXF 文件并校验"
+    tasks:
+      - id: export
+        plugin: pipelines.cad_drawing_pipeline.tasks.ExportDXF
+        depends_on_steps: [refine_drawing]
+
+      - id: validate
+        plugin: pipelines.cad_drawing_pipeline.tasks.ValidateDXF
+        depends_on: [export]

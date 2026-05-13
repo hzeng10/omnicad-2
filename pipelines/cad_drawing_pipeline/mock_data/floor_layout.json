@@ -1,0 +1,14 @@
+{
+  "_comment": "静态参考示例，展示 GenerateFloorLayout 的 OutputModel (LayoutOutput) schema",
+  "layer": "FLOOR",
+  "elements": [
+    {"id": "floor_wall_0", "element_type": "wall", "coords": [[0, 0], [12.0, 0]]},
+    {"id": "floor_wall_1", "element_type": "wall", "coords": [[0, 1], [12.0, 1]]},
+    {"id": "floor_wall_2", "element_type": "wall", "coords": [[0, 2], [12.0, 2]]},
+    {"id": "floor_wall_3", "element_type": "wall", "coords": [[0, 3], [12.0, 3]]},
+    {"id": "floor_wall_4", "element_type": "wall", "coords": [[0, 4], [12.0, 4]]},
+    {"id": "floor_door_0", "element_type": "door",   "coords": [[1.0, 0], [2.0, 0]]},
+    {"id": "floor_window_0", "element_type": "window", "coords": [[4.0, 0], [6.0, 0]]}
+  ],
+  "bbox": [0.0, 0.0, 12.0, 8.0]
+}

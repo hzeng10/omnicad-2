@@ -186,7 +186,7 @@ def start_cmd(
 @app.command()
 def status(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID，格式 <pipeline_id>_yyyyMMdd-hhmmss_<4digit>，由 start 命令打印。"),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """查看指定 pipeline 实例的整体状态与进度。"""
@@ -210,7 +210,7 @@ def status(
 @app.command()
 def inspect(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID，格式 <pipeline_id>_yyyyMMdd-hhmmss_<4digit>，由 start 命令打印。"),
     workspace: Optional[Path] = _workspace_option,
     step: Optional[str] = typer.Option(None, "--step", "-s"),
     task: Optional[str] = typer.Option(None, "--task", "-t"),
@@ -236,7 +236,7 @@ def inspect(
 @app.command()
 def stop(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID，格式 <pipeline_id>_yyyyMMdd-hhmmss_<4digit>，由 start 命令打印。"),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """中止指定 pipeline 实例（整个 run）。"""
@@ -259,7 +259,7 @@ def stop(
 @app.command()
 def resume(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID，格式 <pipeline_id>_yyyyMMdd-hhmmss_<4digit>，由 start 命令打印。"),
     workspace: Optional[Path] = _workspace_option,
     include_paused: bool = typer.Option(False, "--include-paused", help="同时恢复 PAUSED 状态的 task。"),
 ) -> None:
@@ -291,7 +291,7 @@ def resume(
 @app.command()
 def fix(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID，格式 <pipeline_id>_yyyyMMdd-hhmmss_<4digit>，由 start 命令打印。"),
     task_locator: str = typer.Option(..., "--task", "-t", help="step_id/task_id 或 task_id。"),
     workspace: Optional[Path] = _workspace_option,
     output_path: Optional[Path] = typer.Option(None, "--output", help="提供的 output.json 文件路径。"),

@@ -20,19 +20,19 @@ The `recognize` step runs 3 tasks in parallel; wall-clock time ≈ 10s (the slow
 
 ```bash
 # Lint (validate YAML without running)
-python -m pipeline_engine.cli lint examples/cad_pipeline/pipeline.yaml
+python -m pipeline_engine.cli lint pipelines/cad_identify_pipeline/pipeline.yaml
 
 # Run with blocking wait
-python -m pipeline_engine.cli start cad_cost_estimation \
+python -m pipeline_engine.cli start cad_identify_cost_estimation \
   --workspace /tmp/demo \
   --wait
 
 # Interactive REPL
 python -m pipeline_engine.cli --workspace /tmp/demo
-pipeline> load examples/cad_pipeline/pipeline.yaml
-pipeline> start cad_cost_estimation
-pipeline> status cad_cost_estimation --watch    # live Rich table
-pipeline> inspect cad_cost_estimation --step recognize --task rec_cable
+pipeline> load pipelines/cad_identify_pipeline/pipeline.yaml
+pipeline> start cad_identify_cost_estimation
+pipeline> status cad_identify_cost_estimation --watch    # live Rich table
+pipeline> inspect cad_identify_cost_estimation --step recognize --task rec_cable
 ```
 
 ## Failure Recovery Demo
@@ -42,17 +42,17 @@ pipeline> inspect cad_cost_estimation --step recognize --task rec_cable
 PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_engine.cli \
   --workspace /tmp/demo_fail
 
-pipeline> load examples/cad_pipeline/pipeline.yaml
-pipeline> start cad_cost_estimation
-pipeline> status cad_cost_estimation
+pipeline> load pipelines/cad_identify_pipeline/pipeline.yaml
+pipeline> start cad_identify_cost_estimation
+pipeline> status cad_identify_cost_estimation
 # rec_cable shows FAILED
 
-pipeline> fix cad_cost_estimation --task recognize/rec_cable \
-           --output examples/cad_pipeline/mock_data/recover_cable.json
+pipeline> fix cad_identify_cost_estimation --task recognize/rec_cable \
+           --output pipelines/cad_identify_pipeline/mock_data/recover_cable.json
 # rec_cable → FIXED
 
-pipeline> resume cad_cost_estimation
-pipeline> status cad_cost_estimation
+pipeline> resume cad_identify_cost_estimation
+pipeline> status cad_identify_cost_estimation
 # aggregate/merge → SUCCESS, grand_total computed
 ```
 

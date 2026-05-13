@@ -38,6 +38,12 @@ Pipeline
         └── Task[]    (DAG within a step; no-dep tasks run in parallel)
 ```
 
+Demo pipelines live under `pipelines/<name>/`. Each pipeline directory contains
+`pipeline.yaml`, `tasks.py`, `schemas.py`, `mock_data/`, and `README.md`.
+See `pipelines/cad_drawing_pipeline/README.md` for the full interface reference.
+
+Instance ID format: `<pipeline_id>_yyyyMMdd-hhmmss_<4digit>` (UTC, random suffix).
+
 ### State machine
 
 Every Pipeline, Step, and Task tracks one of these statuses:

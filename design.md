@@ -20,7 +20,7 @@
 |---|---|
 | 任务执行模型 | **async + 线程池兜底**：`BaseTask` 暴露 `async def execute()`；为 CPU 密集任务提供 `run_sync()` 钩子，引擎自动通过 `asyncio.to_thread` 卸载到线程池 |
 | CLI 形态 | **REPL 优先 + 一次性子命令**：默认 `pipeline_cli` 进入 REPL；同时支持 `pipeline_cli run/lint/...` 一次性调用 |
-| CAD 示例 | **作为可演示样板交付**：`examples/cad_pipeline/` 提供 7 个 mock 任务（含 8s、10s 两个长时任务） |
+| CAD 示例 | **作为可演示样板交付**：`pipelines/cad_identify_pipeline/` 提供 7 个 mock 任务（含 8s、10s 两个长时任务） |
 | 工作目录 | **默认在 CWD 下** `./.pipeline_runs/...`；支持全局 `--workspace <path>` 自定义 |
 | 多 Pipeline | **多实例并行**：单进程内多个 RunContext，各自独立 scheduler / state |
 | 失败修复 | **fix --output 是核心机制**：补齐 output.json → 任务置 FIXED → 自动继续下游 |
@@ -116,7 +116,7 @@ omnicad-2/
 ```yaml
 version: "1.0"
 pipeline:
-  id: cad_cost_estimation          # 唯一标识，正则 [a-z][a-z0-9_]*
+  id: cad_identify_cost_estimation          # 唯一标识，正则 [a-z][a-z0-9_]*
   name: "CAD 设备成本汇总"
   type: "CAD图识别及算量"            # 必填，业务分类标签（用于 list --pipeline 展示）
   description: "..."               # 可选
@@ -129,20 +129,20 @@ steps:                             # 线性序列，按数组顺序执行
     max_parallelism: 2             # 可选，覆盖全局
     tasks:
       - id: read_dxf
-        plugin: examples.cad_pipeline.tasks.ReadDxfTask
+        plugin: pipelines.cad_identify_pipeline.tasks.ReadDxfTask
         config:                    # 透传给任务的静态参数
           dxf_path: ./input.dxf
         inputs: {}                 # 静态输入（与上游产出合并）
 
       - id: parse_entities
-        plugin: examples.cad_pipeline.tasks.ParseEntitiesTask
+        plugin: pipelines.cad_identify_pipeline.tasks.ParseEntitiesTask
         depends_on: [read_dxf]    # step 内任务级依赖
 
   - id: split_subgraph
     depends_on_steps: [parse_dxf] # 跨 step 依赖
     tasks:
       - id: split
-        plugin: examples.cad_pipeline.tasks.SplitSubgraphTask
+        plugin: pipelines.cad_identify_pipeline.tasks.SplitSubgraphTask
         depends_on_steps: [parse_dxf]
 
   - id: recognize
@@ -155,7 +155,7 @@ steps:                             # 线性序列，按数组顺序执行
   - id: aggregate
     tasks:
       - id: merge
-        plugin: examples.cad_pipeline.tasks.MergeAndDedupTask
+        plugin: pipelines.cad_identify_pipeline.tasks.MergeAndDedupTask
         depends_on_steps: [recognize]
 ```
 
@@ -518,7 +518,7 @@ PromptSession
 | `task_ref` | 同上，格式 `step_id/task_id` | `task in <step>` |
 | `path` | 委托 `PathCompleter` | PathCompleter 接管 |
 
-`ref → pipeline_id` 反查：`instance_id = pipeline_id:timestamp-suffix`，取 `split(":", 1)[0]` 即 pid。
+`ref → pipeline_id` 反查：直接读取 `rm._runs[run_id].pipeline_id`，不做字符串解析（instance_id 格式 `<pipeline_id>_yyyyMMdd-hhmmss_<4digit>` 中 pipeline_id 本身可能包含 `_`，字符串分割有歧义）。
 
 #### 降级策略
 - `_registry` / `_runs` 为空 → 对应 kind 返回空候选，不抛错。
@@ -576,7 +576,7 @@ PromptSession
 
 `recognize` step 三任务并行，总耗时应 ≈ 10s（非 24s）——这是并行调度的关键验收点。
 
-### 10.3 schema（`examples/cad_pipeline/schemas.py`）
+### 10.3 schema（`pipelines/cad_identify_pipeline/schemas.py`）
 
 ```python
 from pydantic import BaseModel
@@ -610,7 +610,7 @@ class MergeOutput(BaseModel):
     summary: list[CostSummaryItem]; grand_total: float
 ```
 
-### 10.4 mock 任务样板（`examples/cad_pipeline/tasks.py` 节选）
+### 10.4 mock 任务样板（`pipelines/cad_identify_pipeline/tasks.py` 节选）
 
 ```python
 import time, asyncio
@@ -646,20 +646,22 @@ class RecCableTask(BaseTask):
 ### 10.5 演示脚本
 
 ```bash
-# REPL 交互演示
+# REPL 交互演示（instance_id 格式：<pipeline_id>_yyyyMMdd-hhmmss_<4digit>）
 python -m pipeline_cli
-> load examples/cad_pipeline/pipeline.yaml
-> start cad_cost_estimation
-> status cad_cost_estimation --watch          # 实时观察进度
-> inspect <run_id> --step recognize --task rec_cable
+> load pipelines/cad_identify_pipeline/pipeline.yaml
+> start cad_identify_cost_estimation
+# start 返回 instance_id，例：cad_identify_cost_estimation_20260513-093024_7392
+> status <Tab>                   # Tab 补全 instance_id
+> inspect <instance_id> --step recognize --task rec_cable
 
 # 失败恢复演示
 PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_cli
-> start cad_cost_estimation
-> inspect <run_id> --step recognize --task rec_cable
-> fix <run_id> --task rec_cable --output examples/cad_pipeline/mock_data/recover_cable.json
-> resume <run_id>
-> status <run_id>                             # 最终 Success
+> start cad_identify_cost_estimation
+> inspect <instance_id> --step recognize --task rec_cable
+> fix <instance_id> --task recognize/rec_cable \
+     --output pipelines/cad_identify_pipeline/mock_data/recover_cable.json
+> resume <instance_id>
+> status <instance_id>           # 最终 Success
 ```
 
 ### 10.6 验收点

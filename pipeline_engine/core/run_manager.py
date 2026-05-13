@@ -35,11 +35,11 @@ from pipeline_engine.models.pipeline_spec import PipelineSpec
 from pipeline_engine.models.runtime_state import PipelineRunState, Status
 
 
-def _new_run_id() -> str:
-    """生成唯一 run_id：时间戳 + 6 位随机十六进制后缀，避免微秒级冲突（C4 修复）。"""
-    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S_%f")
-    suffix = secrets.token_hex(3)
-    return f"{ts}_{suffix}"
+def _new_run_id(pipeline_id: str) -> str:
+    """生成唯一 run_id：<pipeline_id>_yyyyMMdd-HHmmss_<4位随机数>。"""
+    ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+    suffix = f"{secrets.randbelow(10000):04d}"
+    return f"{pipeline_id}_{ts}_{suffix}"
 
 
 class RunManager:
@@ -99,7 +99,16 @@ class RunManager:
                         "请先 stop 后再 run",
                         pipeline_id=pipeline_id,
                     )
-            run_id = _new_run_id()
+            run_id = _new_run_id(pipeline_id)
+            for _ in range(3):
+                if run_id not in self._runs:
+                    break
+                run_id = _new_run_id(pipeline_id)
+            else:
+                raise PipelineError(
+                    "instance_id collision after 3 retries",
+                    pipeline_id=pipeline_id,
+                )
             run_dir = storage.init_run_dir(self.workspace, pipeline_id, run_id)
             run_state = PipelineRunState(
                 pipeline_id=pipeline_id,

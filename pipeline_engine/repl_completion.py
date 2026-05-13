@@ -245,10 +245,13 @@ class PipelineReplCompleter(Completer):
         first_pos = positionals[0]
         if cmd == "start":
             return first_pos if first_pos in self._rm._registry else None
-        else:
-            # instance_id format: pipeline_id:timestamp; derive pid from prefix
-            pid = first_pos.split(":")[0]
-            return pid if pid in self._rm._registry else None
+        # For instance_id args: look up the RunContext and read .pipeline_id directly
+        # (avoids brittle string-parsing since pipeline_id itself may contain '_')
+        if first_pos in self._rm._runs:
+            return self._rm._runs[first_pos].pipeline_id
+        if first_pos in self._rm._registry:
+            return first_pos
+        return None
 
     @staticmethod
     def _get_status(ctx) -> str:

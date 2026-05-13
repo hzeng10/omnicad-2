@@ -134,20 +134,20 @@ def test_start_display_meta_contains_type_and_name(tmp_path):
 def test_ref_completion_lists_instance_ids(tmp_path):
     rm = RunManager(tmp_path)
     rm._registry["cad_cost_estimation"] = _make_spec("cad_cost_estimation")
-    rm._runs["cad_cost_estimation:20260513-093024-7f3a"] = _make_ctx(
-        "cad_cost_estimation", "cad_cost_estimation:20260513-093024-7f3a", Status.RUNNING
+    rm._runs["cad_cost_estimation_20260513-093024_7392"] = _make_ctx(
+        "cad_cost_estimation", "cad_cost_estimation_20260513-093024_7392", Status.RUNNING
     )
     c = PipelineReplCompleter(rm)
 
     for cmd in ("stop", "resume", "status", "inspect", "fix"):
         results = _complete(c, f"{cmd} ")
-        assert "cad_cost_estimation:20260513-093024-7f3a" in results, f"Failed for cmd={cmd}"
+        assert "cad_cost_estimation_20260513-093024_7392" in results, f"Failed for cmd={cmd}"
 
 
 def test_ref_completion_display_meta_has_pipeline_and_status(tmp_path):
     rm = RunManager(tmp_path)
     rm._registry["cad_cost_estimation"] = _make_spec("cad_cost_estimation")
-    run_id = "cad_cost_estimation:20260513-093024-7f3a"
+    run_id = "cad_cost_estimation_20260513-093024_7392"
     rm._runs[run_id] = _make_ctx("cad_cost_estimation", run_id, Status.SUCCESS)
     c = PipelineReplCompleter(rm)
 
@@ -187,7 +187,7 @@ def test_step_flag_completion_via_instance_id(tmp_path):
     rm = RunManager(tmp_path)
     spec = _make_spec("cad_cost_estimation", {"step_a": ["t1"], "step_b": ["t2"]})
     rm._registry["cad_cost_estimation"] = spec
-    run_id = "cad_cost_estimation:20260513-abc"
+    run_id = "cad_cost_estimation_20260513-093024_0001"
     rm._runs[run_id] = _make_ctx("cad_cost_estimation", run_id)
     c = PipelineReplCompleter(rm)
 
@@ -211,7 +211,7 @@ def test_task_flag_completes_all_step_slash_task_refs(tmp_path):
         "recognize": ["rec_building", "rec_cable", "rec_panel"],
     })
     rm._registry["cad_cost_estimation"] = spec
-    run_id = "cad_cost_estimation:20260513-abc"
+    run_id = "cad_cost_estimation_20260513-093024_0002"
     rm._runs[run_id] = _make_ctx("cad_cost_estimation", run_id)
     c = PipelineReplCompleter(rm)
 
@@ -227,7 +227,7 @@ def test_task_flag_completes_after_step_slash(tmp_path):
         "recognize": ["rec_building", "rec_cable", "rec_panel"],
     })
     rm._registry["cad_cost_estimation"] = spec
-    run_id = "cad_cost_estimation:20260513-abc"
+    run_id = "cad_cost_estimation_20260513-093024_0003"
     rm._runs[run_id] = _make_ctx("cad_cost_estimation", run_id)
     c = PipelineReplCompleter(rm)
 
@@ -245,7 +245,7 @@ def test_task_flag_step_slash_exact_match(tmp_path):
         "step_b": ["task_z"],
     })
     rm._registry["cad_cost_estimation"] = spec
-    run_id = "cad_cost_estimation:20260513-abc"
+    run_id = "cad_cost_estimation_20260513-093024_0004"
     rm._runs[run_id] = _make_ctx("cad_cost_estimation", run_id)
     c = PipelineReplCompleter(rm)
 
@@ -302,7 +302,7 @@ def test_fix_output_path_delegated_to_path_completer(tmp_path):
     (tmp_path / "recovered.json").write_text("{}")
     rm = RunManager(tmp_path)
     rm._registry["mypipe"] = _make_spec("mypipe")
-    run_id = "mypipe:20260513-abc"
+    run_id = "mypipe_20260513-093024_0001"
     rm._runs[run_id] = _make_ctx("mypipe", run_id)
     c = PipelineReplCompleter(rm)
 
@@ -343,7 +343,7 @@ def test_status_fallback_when_snapshot_raises(tmp_path):
     """If state_manager._state.status.value throws, display_meta contains 'status=?'."""
     rm = RunManager(tmp_path)
     rm._registry["mypipe"] = _make_spec("mypipe")
-    run_id = "mypipe:20260513-xyz"
+    run_id = "mypipe_20260513-093024_0002"
 
     class _FailingStatus:
         @property

@@ -27,7 +27,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pipeline_engine*", "examples*"]
+include = ["pipeline_engine*", "pipelines*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

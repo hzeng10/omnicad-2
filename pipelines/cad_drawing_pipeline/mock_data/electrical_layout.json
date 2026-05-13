@@ -1,0 +1,12 @@
+{
+  "_comment": "静态参考示例，展示 GenerateElectricalLayout 的 OutputModel (LayoutOutput) schema",
+  "layer": "ELEC",
+  "elements": [
+    {"id": "elec_circuit_C1", "element_type": "circuit", "coords": [[0.0, 0.0], [0.0, 8.0]]},
+    {"id": "elec_circuit_C2", "element_type": "circuit", "coords": [[0.5, 0.0], [0.5, 8.0]]},
+    {"id": "elec_circuit_C3", "element_type": "circuit", "coords": [[1.0, 0.0], [1.0, 8.0]]},
+    {"id": "elec_circuit_C4", "element_type": "circuit", "coords": [[1.5, 0.0], [1.5, 8.0]]},
+    {"id": "elec_panel_main", "element_type": "panel",   "coords": [[0.0, 0.0], [0.3, 0.3]]}
+  ],
+  "bbox": [0.0, 0.0, 12.0, 8.0]
+}

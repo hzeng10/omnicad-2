@@ -45,6 +45,7 @@ _HELP = """\
   help                                           显示此帮助
   exit / quit                                    退出 REPL
 
+[dim]Instance ID 格式：<pipeline_id>_yyyyMMdd-hhmmss_<4digit>  例：cad_drawing_pipeline_20260513-093024_7392[/dim]
 [dim]提示：按 Tab 可补全命令名、pipeline ID、instance ID、step/task 及路径。[/dim]
 """
 
