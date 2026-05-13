@@ -455,8 +455,10 @@ pipeline_cli lint <path>
 pipeline_cli list [--pipeline]                       # 列已注册 pipeline（pipeline_id / type / name）
 pipeline_cli list --instance                         # 列运行实例（pipeline_id / instance_id / status）
 pipeline_cli stop <instance_id>
-pipeline_cli status <ref>
-pipeline_cli inspect <ref> [--step S] [--task T]
+pipeline_cli status <instance_id>
+pipeline_cli inspect <instance_id> [--step S] [--task T]
+pipeline_cli resume <instance_id> [--include-paused]
+pipeline_cli fix <instance_id> --task T [--output PATH] [--input PATH]
 ```
 
 `start` 默认 detach（打印 run_id 即返回）；`--wait` 阻塞等待。
@@ -472,16 +474,57 @@ pipeline_cli inspect <ref> [--step S] [--task T]
 | `list --instance` | 列运行实例（pipeline_id / instance_id / status） |
 | `start <id> [--step S] [--task T]` | 后台启动，立即返回 run_id |
 | `stop <instance_id>` | 触发 abort_event（中止整个实例） |
-| `resume <ref> [--include-paused]` | 默认仅调度 Failed；加 `--include-paused` 同时调度 Paused |
-| `status <ref>` | Rich 表格输出全貌 |
-| `status --all` | 所有活跃 run 总览 |
-| `status <ref> --watch` | Rich Live 实时刷新（显式触发，避免抢屏） |
-| `inspect <ref> --step S --task T` | 输出 input.json / output.json / log.txt / stack_trace |
-| `fix <ref> --task T --output PATH` | 补齐 output.json → FIXED → 自动触发下游 |
-| `fix <ref> --task T --input PATH` | 写入 input.json → New，等 resume 调度 |
-| `exit` | 退出；有活跃 run 时提示 |
+| `resume <instance_id> [--include-paused]` | 默认仅调度 Failed；加 `--include-paused` 同时调度 Paused |
+| `status <instance_id>` | Rich 表格输出全貌 |
+| `status --all` | 所有活跃 pipeline 实例总览 |
+| `status <instance_id> --watch` | Rich Live 实时刷新（显式触发，避免抢屏） |
+| `inspect <instance_id> --step S --task T` | 输出 input.json / output.json / log.txt / stack_trace |
+| `fix <instance_id> --task T --output PATH` | 补齐 output.json → FIXED → 自动触发下游 |
+| `fix <instance_id> --task T --input PATH` | 写入 input.json → New，等 resume 调度 |
+| `exit` | 退出；有活跃 pipeline 实例时提示 |
 
 非阻塞实现：REPL 主协程跑 `PromptSession.prompt_async()`；`start` 通过 `asyncio.create_task` 派发。
+
+### 7.4 REPL 命令补全
+
+#### 架构
+
+```
+PromptSession
+  └── ThreadedCompleter          ← 在后台线程执行补全，不阻塞 asyncio 事件循环
+        └── PipelineReplCompleter(rm)
+              ├── 实时读 rm._registry   → pipeline_id 候选
+              └── 实时读 rm._runs       → instance_id 候选
+```
+
+`PipelineReplCompleter` 实现于 `pipeline_engine/repl_completion.py`，继承 `prompt_toolkit.completion.Completer`。
+
+#### 命令语法表（COMMANDS）
+
+| 命令 | 位置参数 kind | flag-with-value | 布尔 flag |
+|---|---|---|---|
+| `load` | `path` | — | — |
+| `list` | — | — | `--pipeline`, `--instance` |
+| `start` | `pipeline_id` | `--step`→`step_id`, `--task`→`task_ref` | `--wait` |
+| `stop` / `resume` / `status` / `inspect` / `fix` | `ref`（instance_id） | `fix`: `--task`→`task_ref`, `--output`/`--input`→`path`; `start`/`inspect`: `--step`→`step_id`, `--task`→`task_ref` | 各命令自有 |
+
+#### 动态候选 & display_meta
+
+| kind | 候选来源 | display_meta |
+|---|---|---|
+| `pipeline_id` | `rm._registry.keys()` | `<type> | <name>` |
+| `ref` (instance_id) | `rm._runs.keys()` | `pipeline=<pid> | status=<status>` |
+| `step_id` | 从已输入的 pipeline_id/ref 反查 `_registry[pid].steps` | `step #<N>` |
+| `task_ref` | 同上，格式 `step_id/task_id` | `task in <step>` |
+| `path` | 委托 `PathCompleter` | PathCompleter 接管 |
+
+`ref → pipeline_id` 反查：`instance_id = pipeline_id:timestamp-suffix`，取 `split(":", 1)[0]` 即 pid。
+
+#### 降级策略
+- `_registry` / `_runs` 为空 → 对应 kind 返回空候选，不抛错。
+- `state_manager._state.status.value` 不可读 → `display_meta` 显示 `status=?`。
+- 拼错命令名 → 不补任何值。
+- `complete_while_typing=True`：边输入边触发联想；Tab 翻页选择。
 
 ---
 

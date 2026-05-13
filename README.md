@@ -93,7 +93,7 @@ Pipeline 状态: success
 `inspect` 显示指定 task 的完整输入输出 JSON、进度、错误堆栈。下例展示 `merge` 任务——它通过 `depends_on_steps: [recognize]` 自动聚合了3个并行识别任务的输出作为输入：
 
 ```bash
-$ pipeline_cli inspect <run_id> --step aggregate --task merge --workspace /tmp/cad_demo
+$ pipeline_cli inspect <instance_id> --step aggregate --task merge --workspace /tmp/cad_demo
 
 ─────────────────────────────── merge ────────────────────────────────
 状态    : success  进度 : 100%
@@ -149,7 +149,7 @@ Task recognize/rec_cable failed: RuntimeError: Intentional failure injected via 
   20260512T083200_497976_239806: failed
 
 # 2. 查看失败状态：rec_cable 失败，其余任务正常完成
-$ pipeline_cli status <run_id> --workspace /tmp/cad_demo2
+$ pipeline_cli status <instance_id> --workspace /tmp/cad_demo2
 │ recognize │ rec_building  │  success  │ 100% │                              │
 │           │ rec_cable     │  failed   │   0% │ RuntimeError: Intentional... │
 │           │ rec_schematic │  success  │ 100% │                              │
@@ -157,7 +157,7 @@ $ pipeline_cli status <run_id> --workspace /tmp/cad_demo2
 Pipeline 状态: failed
 
 # 3. inspect 查看失败任务的完整错误堆栈
-$ pipeline_cli inspect <run_id> --step recognize --task rec_cable --workspace /tmp/cad_demo2
+$ pipeline_cli inspect <instance_id> --step recognize --task rec_cable --workspace /tmp/cad_demo2
 状态    : failed  进度 : 0%
 错误    : RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
 Traceback (most recent call last):
@@ -168,19 +168,19 @@ Traceback (most recent call last):
 RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
 
 # 4. fix --output：注入人工准备好的恢复数据（引擎自动校验 OutputModel 契约）
-$ pipeline_cli fix <run_id> \
+$ pipeline_cli fix <instance_id> \
   --task recognize/rec_cable \
   --output examples/cad_pipeline/mock_data/recover_cable.json \
   --workspace /tmp/cad_demo2
 Fixed (output): task 'recognize/rec_cable' → FIXED
 
 # 5. resume：仅重调度 FAILED 任务；FIXED 任务跳过，不重复执行
-$ PIPELINE_DEMO_FAST=1 pipeline_cli resume <run_id> --workspace /tmp/cad_demo2
+$ PIPELINE_DEMO_FAST=1 pipeline_cli resume <instance_id> --workspace /tmp/cad_demo2
 Resumed: 20260512T083200_497976_239806
   20260512T083200_497976_239806: success
 
 # 6. 最终状态：rec_cable 为 fixed（已跳过），整体 success
-$ pipeline_cli status <run_id> --workspace /tmp/cad_demo2
+$ pipeline_cli status <instance_id> --workspace /tmp/cad_demo2
 │ recognize │ rec_building  │  success  │ 100% │
 │           │ rec_cable     │  fixed    │   0% │   ← 保留注入数据，未重跑
 │           │ rec_schematic │  success  │ 100% │
@@ -197,7 +197,7 @@ $ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_cost_estimation \
 Started: 20260512T083250_212844_f15b79  (pipeline: cad_cost_estimation)
   20260512T083250_212844_f15b79: new    ← pipeline 整体仍是 new（只完成了一步）
 
-$ pipeline_cli status <run_id> --workspace /tmp/cad_step
+$ pipeline_cli status <instance_id> --workspace /tmp/cad_step
 │ parse_dxf │ read_dxf       │ success │ 100% │
 │           │ parse_entities │ success │ 100% │
 Pipeline 状态: new
@@ -222,14 +222,14 @@ Started: 20260512T...  (pipeline: cad_cost_estimation)
 pipeline> status cad_cost_estimation --watch
 
 # 查看 task 详情
-pipeline> inspect <run_id> --step recognize --task rec_cable
+pipeline> inspect <instance_id> --step recognize --task rec_cable
 
 # 任务失败后注入修复数据
-pipeline> fix <run_id> --task recognize/rec_cable --output /path/to/fix.json
+pipeline> fix <instance_id> --task recognize/rec_cable --output /path/to/fix.json
 修复成功 (output): task 'recognize/rec_cable' → FIXED
 
 # 恢复执行
-pipeline> resume <run_id>
+pipeline> resume <instance_id>
 已恢复: 20260512T...
 
 pipeline> exit
@@ -240,18 +240,20 @@ pipeline> exit
 ## REPL 命令参考
 
 ```
-load <path> [<path>...]                               注册 pipeline YAML 文件
-list [--pipeline]                                     列出 pipeline（pipeline_id / type / name）
-list --instance                                       列出运行实例（pipeline_id / instance_id / status）
-start <pipeline_id> [<id>...] [--step S] [--task T]   启动 run（非阻塞）
-status <ref> [--watch] [--all]                        查看状态；--watch 持续刷新
-inspect <ref> [--step S] [--task T]                   查看 task 详情
-stop <instance_id>                                    中止指定 pipeline 实例（整个 run）
-resume <ref> [--include-paused]                       重调度 FAILED（可选 PAUSED）任务
-fix <ref> --task S/T --output PATH                    注入恢复的 output.json → FIXED
-fix <ref> --task S/T --input PATH                     替换 input.json → 复位为 NEW
+load <path> [<path>...]                                      注册 pipeline YAML 文件
+list [--pipeline]                                            列出 pipeline（pipeline_id / type / name）
+list --instance                                              列出运行实例（pipeline_id / instance_id / status）
+start <pipeline_id> [<id>...] [--step S] [--task T]          启动 pipeline 实例（非阻塞）
+status <instance_id> [--watch] [--all]                       查看 pipeline 实例状态；--watch 持续刷新
+inspect <instance_id> [--step S] [--task T]                  查看 task 详情
+stop <instance_id>                                           中止指定 pipeline 实例（整个 run）
+resume <instance_id> [--include-paused]                      重调度 FAILED（可选 PAUSED）任务
+fix <instance_id> --task S/T --output PATH                   注入恢复的 output.json → FIXED
+fix <instance_id> --task S/T --input PATH                    替换 input.json → 复位为 NEW
 help / exit
 ```
+
+> **Tab 补全**：按 Tab 可补全命令名、pipeline ID（已 `load` 的）、instance ID（已启动的 pipeline 实例，旁注 `pipeline=<pid> | status=<status>`）、`--step`/`--task` 参数值，以及 `load`/`fix --output`/`fix --input` 的文件路径。
 
 ---
 
@@ -336,11 +338,11 @@ class MyTask(BaseTask):
 
 | 文件 | 位置 | 说明 |
 |---|---|---|
-| `input.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<run_id>/<step_id>/<task_id>/` | 引擎在执行前写入 |
+| `input.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/<step_id>/<task_id>/` | 引擎在执行前写入 |
 | `output.json` | 同上 | 任务成功后引擎原子写入 |
 | `log.txt` | 同上 | 任务代码可自行写入日志 |
 | `manual_data/<step_id>/output.json` | `<workspace>/` | skip=true step 的预置输出 |
-| `state.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<run_id>/` | run 状态快照，进程崩溃后恢复用 |
+| `state.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/` | run 状态快照，进程崩溃后恢复用 |
 
 ---
 

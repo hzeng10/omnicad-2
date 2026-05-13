@@ -36,14 +36,16 @@ _HELP = """\
   list --instance                                列出运行实例（pipeline_id / instance_id / status）
   start <id> [<id>...] [--step S] [--task T]    启动一个或多个实例（非阻塞）
   stop <instance_id>                             中止指定 pipeline 实例
-  resume <ref> [--include-paused]               恢复失败的 run
-  status <ref> [--watch]                         查看状态（--watch：持续刷新）
-  status --all                                   查看所有活跃 run
-  inspect <ref> [--step S] [--task T]            查看 task 详情（输入/输出/日志）
-  fix <ref> --task T --output PATH               注入恢复的 output.json
-  fix <ref> --task T --input PATH                注入替换的 input.json
+  resume <instance_id> [--include-paused]        恢复失败的 pipeline 实例
+  status <instance_id> [--watch]                 查看 pipeline 实例状态（--watch：持续刷新）
+  status --all                                   查看所有活跃 pipeline 实例
+  inspect <instance_id> [--step S] [--task T]   查看 task 详情（输入/输出/日志）
+  fix <instance_id> --task T --output PATH       注入恢复的 output.json
+  fix <instance_id> --task T --input PATH        注入替换的 input.json
   help                                           显示此帮助
   exit / quit                                    退出 REPL
+
+[dim]提示：按 Tab 可补全命令名、pipeline ID、instance ID、step/task 及路径。[/dim]
 """
 
 
@@ -53,8 +55,10 @@ async def run_repl(workspace: Path) -> None:
     """启动交互式 REPL（优先使用 prompt_toolkit，不可用时退化为基础模式）。"""
     try:
         from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import ThreadedCompleter
         from prompt_toolkit.history import InMemoryHistory
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from pipeline_engine.repl_completion import PipelineReplCompleter
     except ImportError:
         console.print("[red]prompt_toolkit 未安装 — 退回基础输入模式。[/red]")
         await _run_repl_basic(workspace)
@@ -64,6 +68,8 @@ async def run_repl(workspace: Path) -> None:
     session: PromptSession = PromptSession(
         history=InMemoryHistory(),
         auto_suggest=AutoSuggestFromHistory(),
+        completer=ThreadedCompleter(PipelineReplCompleter(rm)),
+        complete_while_typing=True,
     )
 
     console.print("[bold green]Pipeline REPL[/bold green]  (输入 [cyan]help[/cyan] 查看命令)")
@@ -216,7 +222,7 @@ async def _cmd_stop(rm: RunManager, args: list[str]) -> None:
 
 async def _cmd_resume(rm: RunManager, args: list[str]) -> None:
     if not args:
-        console.print("[yellow]用法:[/yellow] resume <ref> [--include-paused]")
+        console.print("[yellow]用法:[/yellow] resume <instance_id> [--include-paused]")
         return
     ref = args[0]
     include_paused = "--include-paused" in args
@@ -230,7 +236,7 @@ async def _cmd_status(rm: RunManager, args: list[str]) -> None:
         return
 
     if not args:
-        console.print("[yellow]用法:[/yellow] status <ref> [--watch]")
+        console.print("[yellow]用法:[/yellow] status <instance_id> [--watch]")
         return
 
     ref = args[0]
@@ -245,7 +251,7 @@ async def _cmd_status(rm: RunManager, args: list[str]) -> None:
 
 async def _cmd_inspect(rm: RunManager, args: list[str]) -> None:
     if not args:
-        console.print("[yellow]用法:[/yellow] inspect <ref> [--step S] [--task T]")
+        console.print("[yellow]用法:[/yellow] inspect <instance_id> [--step S] [--task T]")
         return
     ref = args[0]
     rest = args[1:]
@@ -257,7 +263,7 @@ async def _cmd_inspect(rm: RunManager, args: list[str]) -> None:
 
 async def _cmd_fix(rm: RunManager, args: list[str]) -> None:
     if len(args) < 1:
-        console.print("[yellow]用法:[/yellow] fix <ref> --task T --output PATH  |  --input PATH")
+        console.print("[yellow]用法:[/yellow] fix <instance_id> --task T --output PATH  |  --input PATH")
         return
     ref = args[0]
     rest = args[1:]

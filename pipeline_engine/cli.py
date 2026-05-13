@@ -6,9 +6,9 @@
 - ``lint``：校验 YAML 语法与 DAG 合法性，不执行。
 - ``start``：启动一个或多个 pipeline run（支持 --step / --task 细粒度启动）。
 - ``stop``：中止指定 pipeline 实例（instance_id）。
-- ``resume``：恢复 FAILED/PAUSED 的 run。
+- ``resume``：恢复 FAILED/PAUSED 的 pipeline 实例。
 - ``fix``：向失败任务注入 input 或 output 数据。
-- ``status``：查看 run 的整体进度。
+- ``status``：查看 pipeline 实例的整体进度。
 - ``inspect``：查看 task 的详细信息（输入/输出/日志）。
 - ``list``：列出已注册 pipeline（--pipeline）或运行实例（--instance）。
 
@@ -186,10 +186,10 @@ def start_cmd(
 @app.command()
 def status(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="run_id 或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
-    """查看指定 run 的整体状态与进度。"""
+    """查看指定 pipeline 实例的整体状态与进度。"""
     from pipeline_engine.core.run_manager import RunManager
     from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.repl import _render_status
@@ -210,12 +210,12 @@ def status(
 @app.command()
 def inspect(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="run_id 或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
     workspace: Optional[Path] = _workspace_option,
     step: Optional[str] = typer.Option(None, "--step", "-s"),
     task: Optional[str] = typer.Option(None, "--task", "-t"),
 ) -> None:
-    """查看 task 的详细信息（输入/输出/日志/堆栈）。"""
+    """查看 pipeline 实例中 task 的详细信息（输入/输出/日志/堆栈）。"""
     from pipeline_engine.core.run_manager import RunManager
     from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.repl import _render_inspect
@@ -236,7 +236,7 @@ def inspect(
 @app.command()
 def stop(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="instance_id（run_id）或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """中止指定 pipeline 实例（整个 run）。"""
@@ -259,11 +259,11 @@ def stop(
 @app.command()
 def resume(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="run_id 或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
     workspace: Optional[Path] = _workspace_option,
     include_paused: bool = typer.Option(False, "--include-paused", help="同时恢复 PAUSED 状态的 task。"),
 ) -> None:
-    """恢复 FAILED（或 PAUSED）的 run，并等待其完成。
+    """恢复 FAILED（或 PAUSED）的 pipeline 实例，并等待其完成。
 
     A4 修复：使用 ``ctx.await_main()`` 安全等待，避免 main_task 为 None 时抛 TypeError。
     """
@@ -291,13 +291,13 @@ def resume(
 @app.command()
 def fix(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., help="run_id 或 pipeline_id。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="pipeline 实例 ID（instance_id / run_id）或 pipeline_id。"),
     task_locator: str = typer.Option(..., "--task", "-t", help="step_id/task_id 或 task_id。"),
     workspace: Optional[Path] = _workspace_option,
     output_path: Optional[Path] = typer.Option(None, "--output", help="提供的 output.json 文件路径。"),
     input_path: Optional[Path] = typer.Option(None, "--input", help="替换的 input.json 文件路径。"),
 ) -> None:
-    """向失败任务注入 output（RECOVERED）或替换 input（PENDING）以驱动 resume。"""
+    """向 pipeline 实例中的失败任务注入 output（FIXED）或替换 input（NEW）以驱动 resume。"""
     from pipeline_engine.core.run_manager import RunManager
     from pipeline_engine.core.errors import PipelineError
 

@@ -57,14 +57,15 @@
 | `list --instance` | 系统 | 列出运行实例（pipeline_id / instance_id / status）。 |
 | `start <id> [--step S] [--task T]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动。 |
 | `stop <instance_id>` | Pipeline 实例 | 中止指定的 pipeline 运行实例（整个 run）。 |
-| `resume <id>` | Pipeline | 恢复被中止或失败的流程。 |
-| `status <id>` | 概览 | 查看指定实例的整体进度和结果。 |
-| `inspect <id>` | 详情 | 查看 Step 或 Task 的详细错误、输入输出及进度。 |
-| `fix <id>` | 错误处理 | 手动注入数据以修复出错的任务状态（→ Fixed 或 → New）。 |
+| `resume <instance_id>` | Pipeline 实例 | 恢复被中止或失败的 pipeline 实例。 |
+| `status <instance_id>` | Pipeline 实例 | 查看指定 pipeline 实例的整体进度和结果。 |
+| `inspect <instance_id>` | Pipeline 实例 | 查看 Step 或 Task 的详细错误、输入输出及进度。 |
+| `fix <instance_id>` | 错误处理 | 手动注入数据以修复出错的任务状态（→ Fixed 或 → New）。 |
 
 ### 3.2 交互特性
 *   **非阻塞 REPL**: 任务在后台异步执行，前台 REPL 始终保持响应，允许用户在任务执行时输入查询或干预指令。
 *   **终端风格**: 采用文本行交互，支持命令补全与历史记录。
+*   **Tab 补全与联想**: REPL 支持 Tab 键补全及边输入边联想（complete_while_typing）。补全范围覆盖：命令名、pipeline_id（已 `load` 的）、instance_id（已启动的实例，含 `pipeline=<pid> | status=<status>` 旁注）、`--step`/`--task` 参数值（从 PipelineSpec 动态读取）、以及 `load` / `fix --output` / `fix --input` 的文件路径。
 *   **stop 范围**: `stop` 始终中止整个实例；task 级 Paused 状态仅由调度器内部产生（abort_event 处理路径），不作为用户接口暴露。
 
 ---
