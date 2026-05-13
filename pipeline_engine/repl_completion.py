@@ -33,6 +33,7 @@ COMMANDS: dict[str, _Grammar] = {
     "help":    _Grammar(args=[]),
     "exit":    _Grammar(args=[]),
     "quit":    _Grammar(args=[]),
+    "clear":   _Grammar(args=[]),
     "load":    _Grammar(args=["path"]),
     "list":    _Grammar(args=[], flags={"--pipeline", "--instance"}),
     "start":   _Grammar(
@@ -52,6 +53,11 @@ COMMANDS: dict[str, _Grammar] = {
                    args=["ref"],
                    flags={"--task", "--output", "--input"},
                    flag_values={"--task": "task_ref", "--output": "path", "--input": "path"},
+               ),
+    "log":     _Grammar(
+                   args=["ref"],
+                   flags={"--all", "--errors-only"},
+                   flag_values={"--tail": "num", "--offset": "num"},
                ),
 }
 
@@ -135,6 +141,8 @@ class PipelineReplCompleter(Completer):
             pid = self._extract_pipeline_context(cmd, completed)
             if pid:
                 yield from self._complete_task_refs(pid, current)
+        elif kind == "num":
+            return  # free numeric input — no completion candidates
         elif kind == "path":
             sub_doc = Document(current)
             yield from _PATH_COMPLETER.get_completions(sub_doc, None)

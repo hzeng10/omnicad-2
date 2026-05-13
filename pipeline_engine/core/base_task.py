@@ -17,6 +17,7 @@ C3 修复：``_SyncProgressAdapter`` 改为 fire-and-forget 模式——
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import ABC
 from typing import Any, Awaitable, Callable
 
@@ -65,6 +66,8 @@ class BaseTask(ABC):
     def __init__(self, task_id: str, config: dict[str, Any]) -> None:
         self.task_id = task_id
         self.config = config
+        # Child logger of pipeline_engine — routes to per-run run.log via RunLogger.
+        self.logger = logging.getLogger(f"pipeline_engine.task.{task_id}")
 
     async def execute(self, inputs: dict[str, Any], progress: ProgressCallback) -> dict[str, Any]:
         """默认实现：若子类重写了 run_sync，则自动委托到线程池执行。"""

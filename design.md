@@ -435,6 +435,30 @@ class PipelineError(Exception):
 
 引擎内部所有抛出均用此类；用户任务异常被引擎捕获并包装。
 
+### 6.8 RunLogger（`core/run_logger.py`）
+
+每次 pipeline run 对应一个 `RunLogger` 实例，将四类输出汇聚到 `<run_dir>/run.log`。
+
+**日志文件路径**：`storage.get_run_log_path(workspace, pipeline_id, run_id)` → `<run_dir>/run.log`
+
+**日志行格式**（固定列宽）：
+```
+2026-05-13T09:30:24.123Z  INFO   [export_dxf/validate         ]  task start
+2026-05-13T09:30:24.456Z  ERROR  [export_dxf/validate         ]  DEMO_FAIL: 强制失败
+```
+
+**四源捕获**：
+1. 引擎生命周期：`scheduler.run()` / `_dispatch_task()` 的显式 `run_logger.info/error(...)` 调用。
+2. Python logging：`pipeline_engine.*` 所有 logger 通过 propagate 流入挂在 `pipeline_engine` 上的 `FileHandler`，由 `_RunFilter` 按 `_run_id_var` 隔离。
+3. Task 自定义：`BaseTask.logger = logging.getLogger(f"pipeline_engine.task.{task_id}")`，天然继承同一 FileHandler。
+4. stdout/stderr：全局替换为 `_RunAwareStream`，根据 `_run_id_var` 将 write() 路由到对应 run 的 logger；无 run 上下文时透传原始流。
+
+**多 run 隔离**：两个模块级 `contextvars.ContextVar` — `_run_id_var`（run 粒度）、`_task_ctx_var`（task 粒度）。asyncio Task 的 copy-on-write 语义确保并发 run 之间不共享 ContextVar 值。
+
+**生命周期**：`scheduler.run()` 入口调用 `attach()`（设 contextvar + 挂 FileHandler + 初始化 stdout wrapper），`finally` 块调用 `detach()`（移除 handler + 关闭 fd）。resume 走相同路径，FileHandler 以 `mode="a"` 追加，日志连续。
+
+**`task_context(step_id, task_id)`**：同步 contextmanager，在 `_dispatch_task` 中以 `with` 包裹 task 执行段；进入时打 "task start"，正常退出打 "task done"，异常退出打 "task failed"（并 re-raise 供外层 `fail_task` 处理）。
+
 ---
 
 ## 7. CLI / REPL 指令
@@ -481,6 +505,8 @@ pipeline_cli fix <instance_id> --task T [--output PATH] [--input PATH]
 | `inspect <instance_id> --step S --task T` | 输出 input.json / output.json / log.txt / stack_trace |
 | `fix <instance_id> --task T --output PATH` | 补齐 output.json → FIXED → 自动触发下游 |
 | `fix <instance_id> --task T --input PATH` | 写入 input.json → New，等 resume 调度 |
+| `log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]` | 分页显示 run.log；默认最后 100 行；ERROR 行红色高亮 |
+| `clear` | 清屏（发 ANSI escape，REPL 提示符随后出现在顶部） |
 | `exit` | 退出；有活跃 pipeline 实例时提示 |
 
 非阻塞实现：REPL 主协程跑 `PromptSession.prompt_async()`；`start` 通过 `asyncio.create_task` 派发。

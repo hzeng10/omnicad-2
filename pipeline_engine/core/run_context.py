@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pipeline_engine.core.run_logger import RunLogger
     from pipeline_engine.core.scheduler import AsyncScheduler
     from pipeline_engine.core.state_manager import StateManager
     from pipeline_engine.models.pipeline_spec import PipelineSpec
@@ -35,6 +36,7 @@ class RunContext:
         scheduler: "AsyncScheduler",
         state_manager: "StateManager",
         abort_event: asyncio.Event,
+        run_logger: "RunLogger | None" = None,
     ) -> None:
         self.pipeline_spec = pipeline_spec
         self.run_id = run_id
@@ -42,6 +44,7 @@ class RunContext:
         self.scheduler = scheduler
         self.state_manager = state_manager
         self.abort_event = abort_event
+        self.run_logger = run_logger
         # main_task 由 RunManager.start_run() / resume() 赋值；None 表示尚未启动
         self.main_task: asyncio.Task | None = None
 

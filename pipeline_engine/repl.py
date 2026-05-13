@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -23,27 +24,33 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
+from pipeline_engine.core import storage
 from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.core.run_manager import RunManager
 from pipeline_engine.models.runtime_state import PipelineRunState, Status
+
+# 日志行中第二列级别的正则（格式：<timestamp>  LEVEL  [ctx]  msg）
+_LOG_LEVEL_RE = re.compile(r"^\S+\s+(\w+)\s+")
 
 console = Console()
 
 _HELP = """\
 [bold cyan]可用命令：[/bold cyan]
-  load <path> [<path>...]                        加载 pipeline YAML 文件
-  list [--pipeline]                              列出已注册的 pipeline（pipeline_id / type / name）
-  list --instance                                列出运行实例（pipeline_id / instance_id / status）
-  start <id> [<id>...] [--step S] [--task T]    启动一个或多个实例（非阻塞）
-  stop <instance_id>                             中止指定 pipeline 实例
-  resume <instance_id> [--include-paused]        恢复失败的 pipeline 实例
-  status <instance_id> [--watch]                 查看 pipeline 实例状态（--watch：持续刷新）
-  status --all                                   查看所有活跃 pipeline 实例
-  inspect <instance_id> [--step S] [--task T]   查看 task 详情（输入/输出/日志）
-  fix <instance_id> --task T --output PATH       注入恢复的 output.json
-  fix <instance_id> --task T --input PATH        注入替换的 input.json
-  help                                           显示此帮助
-  exit / quit                                    退出 REPL
+  load <path> [<path>...]                                          加载 pipeline YAML 文件
+  list [--pipeline]                                                列出已注册的 pipeline（pipeline_id / type / name）
+  list --instance                                                  列出运行实例（pipeline_id / instance_id / status）
+  start <id> [<id>...] [--step S] [--task T]                      启动一个或多个实例（非阻塞）
+  stop <instance_id>                                               中止指定 pipeline 实例
+  resume <instance_id> [--include-paused]                         恢复失败的 pipeline 实例
+  status <instance_id> [--watch]                                   查看 pipeline 实例状态（--watch：持续刷新）
+  status --all                                                     查看所有活跃 pipeline 实例
+  inspect <instance_id> [--step S] [--task T]                     查看 task 详情（输入/输出/日志）
+  fix <instance_id> --task T --output PATH                         注入恢复的 output.json
+  fix <instance_id> --task T --input PATH                          注入替换的 input.json
+  log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]  查看 run 日志（ERROR 高亮红色）
+  clear                                                            清屏
+  help                                                             显示此帮助
+  exit / quit                                                      退出 REPL
 
 [dim]Instance ID 格式：<pipeline_id>_yyyyMMdd-hhmmss_<4digit>  例：cad_drawing_pipeline_20260513-093024_7392[/dim]
 [dim]提示：按 Tab 可补全命令名、pipeline ID、instance ID、step/task 及路径。[/dim]
@@ -178,6 +185,12 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
 
         case "fix":
             await _cmd_fix(rm, args)
+
+        case "log":
+            await _cmd_log(rm, args)
+
+        case "clear":
+            console.clear()
 
         case _:
             console.print(f"[red]未知命令:[/red] {cmd!r}  (输入 [cyan]help[/cyan] 查看命令列表)")
@@ -444,6 +457,70 @@ def _render_task_detail(task_id: str, ts) -> None:
             # C12：按行截尾（最后 200 行）
             lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
             console.print("\n".join(lines[-200:]))
+
+
+async def _cmd_log(rm: RunManager, args: list[str]) -> None:
+    """log 命令：分页显示指定 instance 的 run.log，ERROR 行高亮红色。"""
+    if not args:
+        console.print(
+            "[yellow]用法:[/yellow] log <instance_id> "
+            "[--tail N] [--offset N] [--all] [--errors-only]"
+        )
+        return
+
+    ref = args[0]
+    rest = args[1:]
+
+    try:
+        tail_str = _get_flag(rest, "--tail")
+        offset_str = _get_flag(rest, "--offset")
+        tail = int(tail_str) if tail_str else 100
+        offset = int(offset_str) if offset_str else 0
+    except ValueError:
+        console.print("[red]错误:[/red] --tail / --offset 必须为整数")
+        return
+
+    show_all = "--all" in rest
+    errors_only = "--errors-only" in rest
+
+    ctx = rm._resolve_run(ref)
+    log_path = storage.get_run_log_path(rm.workspace, ctx.pipeline_id, ctx.run_id)
+    if not log_path.exists():
+        console.print(f"[dim]日志文件尚未生成: {log_path}[/dim]")
+        return
+
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    if errors_only:
+        lines = [ln for ln in lines if " ERROR " in ln]
+
+    total = len(lines)
+    if show_all:
+        start, end = 0, total
+        view = lines
+    else:
+        end = max(0, total - offset)
+        start = max(0, end - tail)
+        view = lines[start:end]
+
+    console.print(
+        f"[dim]日志: {log_path}  共 {total} 行  "
+        f"显示第 {start + 1}–{end} 行[/dim]"
+    )
+    for line in view:
+        _render_log_line(line)
+
+
+def _render_log_line(line: str) -> None:
+    """按日志级别着色输出单行日志。"""
+    m = _LOG_LEVEL_RE.match(line)
+    level = m.group(1).upper() if m else ""
+    if level == "ERROR" or level == "CRITICAL":
+        console.print(line, style="bold red")
+    elif level == "WARNING" or level == "WARN":
+        console.print(line, style="yellow")
+    else:
+        console.print(line, style="dim")
 
 
 def _print_pipelines(rm: RunManager) -> None:

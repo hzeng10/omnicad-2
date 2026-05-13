@@ -43,6 +43,7 @@
     *   **Pipeline 视图**: 查看总进度、整体结果、开始/结束时间。
     *   **Step 视图**: 查看该步骤内所有任务的执行情况、依赖关系、错误信息。
     *   **Task 视图**: 查看具体任务的输入输出快照、实时进度及详细堆栈日志。
+*   **运行日志**: 每个 instance 一份 `<run_dir>/run.log`，捕获引擎生命周期事件、`pipeline_engine` 包内 Python logging 输出、Task 自定义 `self.logger` 日志，以及 task 内 stdout/stderr 写入。格式：`<UTC时间>  <级别>  [<step/task>]  <消息>`。ERROR 行在 REPL `log` 命令中以红色高亮。resume 时日志追加到同一文件。
 
 ---
 
@@ -62,6 +63,8 @@
 | `status <instance_id>` | Pipeline 实例 | 查看指定 pipeline 实例的整体进度和结果。 |
 | `inspect <instance_id>` | Pipeline 实例 | 查看 Step 或 Task 的详细错误、输入输出及进度。 |
 | `fix <instance_id>` | 错误处理 | 手动注入数据以修复出错的任务状态（→ Fixed 或 → New）。 |
+| `log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]` | Pipeline 实例 | 分页显示 run.log；ERROR 行红色高亮；默认最后 100 行。 |
+| `clear` | REPL | 清除当前控制台显示内容。 |
 
 ### 3.2 交互特性
 *   **非阻塞 REPL**: 任务在后台异步执行，前台 REPL 始终保持响应，允许用户在任务执行时输入查询或干预指令。

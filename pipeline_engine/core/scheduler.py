@@ -22,6 +22,7 @@ from pipeline_engine.core import storage
 from pipeline_engine.core.dag_validator import build_task_graph, build_step_graph
 from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.core.plugin_loader import instantiate_task
+from pipeline_engine.core.run_logger import RunLogger
 from pipeline_engine.models.runtime_state import Status
 
 if TYPE_CHECKING:
@@ -45,12 +46,14 @@ class AsyncScheduler:
         workspace: str | Path,
         abort_event: asyncio.Event,
         global_semaphore: asyncio.Semaphore,
+        run_logger: RunLogger | None = None,
     ) -> None:
         self._spec = spec
         self._sm = state_manager
         self._workspace = Path(workspace)
         self._abort_event = abort_event
         self._global_sem = global_semaphore
+        self._run_logger = run_logger
 
     @property
     def _pipeline_id(self) -> str:
@@ -65,8 +68,12 @@ class AsyncScheduler:
 
     async def run(self) -> None:
         """端到端执行整个 pipeline（所有 step 按拓扑排序）。"""
-        await self._sm.start_pipeline()
+        if self._run_logger:
+            self._run_logger.attach()
         try:
+            await self._sm.start_pipeline()
+            if self._run_logger:
+                self._run_logger.info("pipeline execution started")
             import networkx as nx
             step_graph = build_step_graph(self._spec)
             for step_gen in nx.topological_generations(step_graph):
@@ -79,28 +86,48 @@ class AsyncScheduler:
                 step.status in (Status.SUCCESS, Status.SKIPPED, Status.FIXED)
                 for step in run_state.steps.values()
             )
+            if self._run_logger:
+                status_word = "SUCCESS" if all_ok else "FAILED"
+                self._run_logger.info("pipeline finished — status=%s", status_word)
             await self._sm.finish_pipeline(success=all_ok)
         except Exception:
+            if self._run_logger:
+                self._run_logger.error("pipeline aborted with exception")
             await self._sm.finish_pipeline(success=False)
             raise
+        finally:
+            if self._run_logger:
+                self._run_logger.detach()
 
     async def run_step(self, step_id: str) -> None:
         """仅执行指定 step（``run --step`` 模式）。"""
-        step_spec = self._get_step(step_id)
-        await self._run_step(step_spec)
+        if self._run_logger:
+            self._run_logger.attach()
+        try:
+            step_spec = self._get_step(step_id)
+            await self._run_step(step_spec)
+        finally:
+            if self._run_logger:
+                self._run_logger.detach()
 
     async def run_task(self, step_id: str, task_id: str) -> None:
         """仅执行指定 task（``run --task`` 模式）。"""
-        step_spec = self._get_step(step_id)
-        task_spec = next((t for t in step_spec.tasks if t.id == task_id), None)
-        if task_spec is None:
-            raise PipelineError(
-                f"task '{task_id}' not found in step '{step_id}'",
-                pipeline_id=self._pipeline_id,
-                step_id=step_id,
-            )
-        await self._sm.init_step(step_id, [task_id])
-        await self._dispatch_task(step_spec, task_spec)
+        if self._run_logger:
+            self._run_logger.attach()
+        try:
+            step_spec = self._get_step(step_id)
+            task_spec = next((t for t in step_spec.tasks if t.id == task_id), None)
+            if task_spec is None:
+                raise PipelineError(
+                    f"task '{task_id}' not found in step '{step_id}'",
+                    pipeline_id=self._pipeline_id,
+                    step_id=step_id,
+                )
+            await self._sm.init_step(step_id, [task_id])
+            await self._dispatch_task(step_spec, task_spec)
+        finally:
+            if self._run_logger:
+                self._run_logger.detach()
 
     # ─── step 执行 ────────────────────────────────────────────────────────────
 
@@ -186,6 +213,8 @@ class AsyncScheduler:
                 pipeline_id=self._pipeline_id,
                 step_id=step.id,
             )
+        if self._run_logger:
+            self._run_logger.info("step skipped (manual_data loaded): %s", step.id)
         await self._sm.skip_step(step.id)
 
     # ─── task 执行 ────────────────────────────────────────────────────────────
@@ -213,14 +242,21 @@ class AsyncScheduler:
         async def progress_cb(value: int) -> None:
             await self._sm.update_progress(step_id, task_id, value)
 
+        from contextlib import nullcontext
+        _log_ctx = (
+            self._run_logger.task_context(step_id, task_id)
+            if self._run_logger
+            else nullcontext()
+        )
         try:
             # 此处捕获所有异常（包括 PipelineError），统一写入 fail_task
-            task_instance = instantiate_task(task_spec.plugin, task_id, task_spec.config)
-            validated_inputs = task_instance.validate_input(inputs)
-            output = await task_instance.execute(validated_inputs, progress_cb)
-            validated_output = task_instance.validate_output(output)
-            # 先原子写盘，再更新内存状态（保证崩溃后可从文件恢复）
-            storage.atomic_write_json(output_path, validated_output)
+            with _log_ctx:
+                task_instance = instantiate_task(task_spec.plugin, task_id, task_spec.config)
+                validated_inputs = task_instance.validate_input(inputs)
+                output = await task_instance.execute(validated_inputs, progress_cb)
+                validated_output = task_instance.validate_output(output)
+                # 先原子写盘，再更新内存状态（保证崩溃后可从文件恢复）
+                storage.atomic_write_json(output_path, validated_output)
             await self._sm.finish_task(
                 step_id,
                 task_id,

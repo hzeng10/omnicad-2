@@ -181,6 +181,11 @@ def fix_output(
 
 # ─── task output 访问 ──────────────────────────────────────────────────────────
 
+def get_run_log_path(workspace: str | Path, pipeline_id: str, run_id: str) -> Path:
+    """返回指定 run 的统一日志文件路径：<run_dir>/run.log。"""
+    return get_run_dir(workspace, pipeline_id, run_id) / "run.log"
+
+
 def get_task_output_path(
     workspace: str | Path, pipeline_id: str, run_id: str, step_id: str, task_id: str
 ) -> Path:

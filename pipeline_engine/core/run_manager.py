@@ -28,6 +28,7 @@ from pipeline_engine.core import storage
 from pipeline_engine.core.dag_validator import validate_pipeline
 from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.core.run_context import RunContext
+from pipeline_engine.core.run_logger import RunLogger
 from pipeline_engine.core.scheduler import AsyncScheduler
 from pipeline_engine.core.state_manager import StateManager
 from pipeline_engine.core.yaml_parser import load_pipeline_spec
@@ -117,7 +118,11 @@ class RunManager:
             )
             sm = StateManager(run_state)
             abort_event = asyncio.Event()
-            sched = AsyncScheduler(spec, sm, self.workspace, abort_event, self._global_sem)
+            log_path = storage.get_run_log_path(self.workspace, pipeline_id, run_id)
+            run_logger = RunLogger(run_id, log_path)
+            sched = AsyncScheduler(
+                spec, sm, self.workspace, abort_event, self._global_sem, run_logger
+            )
             ctx = RunContext(
                 pipeline_spec=spec,
                 run_id=run_id,
@@ -125,6 +130,7 @@ class RunManager:
                 scheduler=sched,
                 state_manager=sm,
                 abort_event=abort_event,
+                run_logger=run_logger,
             )
             self._runs[run_id] = ctx
 
@@ -342,7 +348,11 @@ class RunManager:
                 # A1：将崩溃遗留的 RUNNING 状态复位为 FAILED
                 sm.demote_orphans_sync()
                 abort_event = asyncio.Event()
-                sched = AsyncScheduler(spec, sm, self.workspace, abort_event, self._global_sem)
+                log_path = storage.get_run_log_path(self.workspace, pipeline_id, run_id)
+                run_logger = RunLogger(run_id, log_path)
+                sched = AsyncScheduler(
+                    spec, sm, self.workspace, abort_event, self._global_sem, run_logger
+                )
                 ctx = RunContext(
                     pipeline_spec=spec,
                     run_id=run_id,
@@ -350,6 +360,7 @@ class RunManager:
                     scheduler=sched,
                     state_manager=sm,
                     abort_event=abort_event,
+                    run_logger=run_logger,
                 )
                 self._runs[run_id] = ctx
 

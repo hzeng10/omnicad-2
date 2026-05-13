@@ -44,6 +44,8 @@ See `pipelines/cad_drawing_pipeline/README.md` for the full interface reference.
 
 Instance ID format: `<pipeline_id>_yyyyMMdd-hhmmss_<4digit>` (UTC, random suffix).
 
+Each run produces a single `run.log` under `.pipeline_runs/<pipeline_id>/<run_id>/`, viewable via REPL `log <instance_id>`. Resume appends to the same file.
+
 ### State machine
 
 Every Pipeline, Step, and Task tracks one of these statuses:

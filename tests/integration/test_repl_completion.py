@@ -79,8 +79,9 @@ def test_command_completion_partial_prefix(tmp_path):
 
 def test_command_completion_unique_prefix(tmp_path):
     c = _completer(tmp_path)
+    # "lo" now matches both "load" and "log"
     results = _complete(c, "lo")
-    assert results == ["load"]
+    assert set(results) == {"load", "log"}
 
 
 # ─── pipeline_id completion (start command) ───────────────────────────────────
