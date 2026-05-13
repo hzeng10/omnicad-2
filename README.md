@@ -12,6 +12,7 @@
 - **中止 / 恢复** — `stop` 通过 `asyncio.Event` 触发有序中止；`resume` 仅重调度 FAILED（可选 PAUSED）任务，保留已完成的工作
 - **多 pipeline 并发** — 多个 pipeline 在同一进程内运行，各自持有独立的 `RunContext`；共享 `asyncio.Semaphore` 限制总线程池用量
 - **交互式 REPL** — 基于 `prompt_toolkit` 的 REPL 与调度器共享事件循环，非阻塞运行；`status --watch` 在任务执行中实时刷新 Rich 表格
+- **运行日志** — 每个 instance 一份 `run.log`，汇聚引擎生命周期事件、`pipeline_engine.*` Python logging、Task `self.logger` 自定义日志及 stdout/stderr；`log` 命令分页查看，ERROR 行红色高亮，resume 续写同一文件
 - **完善的状态机守卫** — `finish_task`/`fail_task`/`update_progress` 均内置非法迁移检查，防止并发竞争导致状态混乱
 - **90%+ 测试覆盖率** — 涵盖单元、集成、端到端三层
 
@@ -232,6 +233,15 @@ pipeline> fix <instance_id> --task recognize/rec_cable --output /path/to/fix.jso
 pipeline> resume <instance_id>
 已恢复: 20260512T...
 
+# 查看运行日志（默认最后 100 行，ERROR 行红色高亮）
+pipeline> log <instance_id>
+pipeline> log <instance_id> --errors-only          # 只看错误行
+pipeline> log <instance_id> --tail 50              # 最后 50 行
+pipeline> log <instance_id> --offset 100 --tail 50 # 向上翻页
+
+# 清屏
+pipeline> clear
+
 pipeline> exit
 ```
 
@@ -240,20 +250,33 @@ pipeline> exit
 ## REPL 命令参考
 
 ```
-load <path> [<path>...]                                      注册 pipeline YAML 文件
-list [--pipeline]                                            列出 pipeline（pipeline_id / type / name）
-list --instance                                              列出运行实例（pipeline_id / instance_id / status）
-start <pipeline_id> [<id>...] [--step S] [--task T]          启动 pipeline 实例（非阻塞）
-status <instance_id> [--watch] [--all]                       查看 pipeline 实例状态；--watch 持续刷新
-inspect <instance_id> [--step S] [--task T]                  查看 task 详情
-stop <instance_id>                                           中止指定 pipeline 实例（整个 run）
-resume <instance_id> [--include-paused]                      重调度 FAILED（可选 PAUSED）任务
-fix <instance_id> --task S/T --output PATH                   注入恢复的 output.json → FIXED
-fix <instance_id> --task S/T --input PATH                    替换 input.json → 复位为 NEW
+load <path> [<path>...]                                            注册 pipeline YAML 文件
+list [--pipeline]                                                  列出 pipeline（pipeline_id / type / name）
+list --instance                                                    列出运行实例（pipeline_id / instance_id / status）
+start <pipeline_id> [<id>...] [--step S] [--task T]                启动 pipeline 实例（非阻塞）
+status <instance_id> [--watch] [--all]                             查看 pipeline 实例状态；--watch 持续刷新
+inspect <instance_id> [--step S] [--task T]                        查看 task 详情
+stop <instance_id>                                                 中止指定 pipeline 实例（整个 run）
+resume <instance_id> [--include-paused]                            重调度 FAILED（可选 PAUSED）任务
+fix <instance_id> --task S/T --output PATH                         注入恢复的 output.json → FIXED
+fix <instance_id> --task S/T --input PATH                          替换 input.json → 复位为 NEW
+log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]  查看 run 日志；ERROR 行红色高亮
+clear                                                              清屏
 help / exit
 ```
 
-> **Tab 补全**：按 Tab 可补全命令名、pipeline ID（已 `load` 的）、instance ID（已启动的 pipeline 实例，旁注 `pipeline=<pid> | status=<status>`）、`--step`/`--task` 参数值，以及 `load`/`fix --output`/`fix --input` 的文件路径。
+**`log` 命令说明**
+
+| 参数 | 说明 | 默认 |
+|---|---|---|
+| `--tail N` | 显示最后 N 行 | 100 |
+| `--offset N` | 从末尾第 N 行往前取（实现"上翻页"：`--offset 100 --tail 100`） | 0 |
+| `--all` | 显示全部内容，忽略 `--tail` | — |
+| `--errors-only` | 仅显示 `ERROR` 级别行 | — |
+
+日志文件路径：`<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/run.log`
+
+> **Tab 补全**：按 Tab 可补全命令名、pipeline ID（已 `load` 的）、instance ID（已启动的 pipeline 实例，旁注 `pipeline=<pid> | status=<status>`）、`--step`/`--task` 参数值，以及 `load`/`fix --output`/`fix --input`/`log` 的文件路径与 flag。
 
 ---
 
@@ -340,9 +363,9 @@ class MyTask(BaseTask):
 |---|---|---|
 | `input.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/<step_id>/<task_id>/` | 引擎在执行前写入 |
 | `output.json` | 同上 | 任务成功后引擎原子写入 |
-| `log.txt` | 同上 | 任务代码可自行写入日志 |
 | `manual_data/<step_id>/output.json` | `<workspace>/` | skip=true step 的预置输出 |
 | `state.json` | `<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/` | run 状态快照，进程崩溃后恢复用 |
+| `run.log` | `<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/` | 全量运行日志（引擎生命周期 + Python logging + task self.logger + stdout）；resume 续写，`log` 命令查看 |
 
 ---
 
@@ -400,7 +423,8 @@ PAUSED  → NEW                  （reset_for_resume --include-paused）
 | `state_manager.py` | 运行时状态的唯一可信来源（asyncio.Lock 保护 + 状态机守卫） |
 | `run_manager.py` | 进程级协调器（加载/启动/停止/恢复/修复多个 pipeline） |
 | `run_context.py` | 单次 run 的运行时容器（scheduler + state_manager + abort_event） |
+| `run_logger.py` | per-run 日志管理（FileHandler 隔离 + ContextVar 多 run 并发安全 + stdout 路由） |
 | `plugin_loader.py` | 动态加载 BaseTask 子类（点分路径 → 类实例） |
 | `storage.py` | 所有磁盘 I/O 的统一入口（原子写入 + 注册表） |
 | `dag_validator.py` | DAG 合法性校验 + 拓扑分代计算 |
-| `base_task.py` | 所有业务任务必须继承的抽象基类 |
+| `base_task.py` | 所有业务任务必须继承的抽象基类；暴露 `self.logger` 供任务写入 run.log |
