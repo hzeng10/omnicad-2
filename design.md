@@ -56,35 +56,45 @@ omnicad-2/
 ├── design.md                       # 本文件（设计变更时同步更新）
 ├── pipeline_engine/                # 引擎本体（与业务解耦）
 │   ├── __init__.py
-│   ├── cli.py                      # typer 入口
+│   ├── cli.py                      # typer 入口（一次性子命令）
 │   ├── repl.py                     # prompt_toolkit + asyncio REPL
+│   ├── repl_completion.py          # Tab 补全（COMMANDS 语法表 + 动态候选）
 │   ├── models/
 │   │   ├── pipeline_spec.py        # YAML schema 模型
 │   │   └── runtime_state.py        # 运行时状态模型
 │   ├── core/
-│   │   ├── base_task.py            # BaseTask 抽象基类
+│   │   ├── base_task.py            # BaseTask 抽象基类；暴露 self.logger
 │   │   ├── plugin_loader.py        # 动态加载 module.ClassName
 │   │   ├── yaml_parser.py          # YAML → Pydantic
 │   │   ├── dag_validator.py        # NetworkX 校验 & 拓扑排序
 │   │   ├── scheduler.py            # AsyncScheduler（单 run 调度）
 │   │   ├── run_context.py          # RunContext：单次 run 的容器
+│   │   ├── run_logger.py           # RunLogger：per-run 日志（FileHandler + ContextVar 隔离）
 │   │   ├── run_manager.py          # RunManager：多 run 协调器
-│   │   ├── state_manager.py        # StateManager（asyncio.Lock 保护，按 run_id 隔离）
-│   │   ├── storage.py              # 工作目录读写、原子落盘
+│   │   ├── state_manager.py        # StateManager（asyncio.Lock 保护）
+│   │   ├── storage.py              # 工作目录读写、原子落盘、路径辅助
 │   │   └── errors.py               # PipelineError 体系
 │   └── builtin/
 │       └── manual_data_loader.py   # skip 模式从 manual_data/ 加载
-├── examples/
-│   └── cad_pipeline/               # CAD 设备成本汇总示例（mock 版）
-│       ├── __init__.py
+├── pipelines/                      # Demo pipeline 仓库（各自独立，与引擎解耦）
+│   ├── cad_identify_pipeline/      # CAD 设备识别 + 成本估算（pipeline_id: cad_identify_cost_estimation）
+│   │   ├── pipeline.yaml
+│   │   ├── tasks.py                # 7 个 mock 任务，含进度推送与失败注入
+│   │   ├── schemas.py
+│   │   ├── mock_data/
+│   │   │   ├── dxf_entities.json
+│   │   │   └── recover_cable.json  # fix --output 恢复演示数据
+│   │   └── README.md
+│   └── cad_drawing_pipeline/       # CAD 自动出图示例（pipeline_id: cad_drawing_pipeline）
 │       ├── pipeline.yaml
-│       ├── tasks.py                # 7 个 mock 任务，含长时任务与进度推送
-│       ├── schemas.py              # Pydantic InputModel / OutputModel
+│       ├── tasks.py                # 6 个任务：覆盖 async/run_sync/InputModel/OutputModel/progress/skip/fail
+│       ├── schemas.py
 │       ├── mock_data/
-│       │   ├── dxf_entities.json
-│       │   ├── subgraphs.json
-│       │   ├── recognized_items.json
-│       │   └── recover_cable.json  # 失败恢复演示用兜底数据
+│       │   ├── requirement.json
+│       │   ├── floor_layout.json
+│       │   ├── electrical_layout.json
+│       │   └── refine_drawing/
+│       │       └── output.json     # skip step 必需的预置输出
 │       └── README.md
 └── tests/
     ├── conftest.py
@@ -92,19 +102,32 @@ omnicad-2/
     │   ├── test_yaml_parser.py
     │   ├── test_dag_validator.py
     │   ├── test_plugin_loader.py
+    │   ├── test_pipeline_spec.py
     │   ├── test_state_manager.py
+    │   ├── test_state_migration.py
     │   ├── test_storage.py
-    │   └── test_base_task.py
+    │   ├── test_base_task.py
+    │   ├── test_manual_data_loader.py
+    │   ├── test_run_logger.py      # RunLogger attach/detach/task_context/stdout 路由
+    │   ├── test_run_manager.py     # instance_id 格式 + 冲突重试
+    │   └── test_cli.py
     ├── integration/
     │   ├── test_scheduler.py
     │   ├── test_skip_mode.py
     │   ├── test_abort_resume.py
     │   ├── test_fix_command.py
     │   ├── test_multi_pipeline.py
-    │   └── test_repl_commands.py
+    │   ├── test_cross_process_resume.py
+    │   ├── test_state_guards.py
+    │   ├── test_repl_commands.py
+    │   ├── test_repl_completion.py  # Tab 补全集成测试
+    │   ├── test_repl_log_command.py # log 命令分页 / 过滤 / 补全
+    │   └── test_repl_rendering.py
     └── e2e/
         ├── test_cad_example.py
-        └── test_cad_failure_recovery.py
+        ├── test_cad_failure_recovery.py
+        ├── test_cad_drawing_pipeline.py  # cad_drawing_pipeline 全流程 / skip / fail+fix
+        └── test_run_logging.py           # run.log 生成、内容、ERROR 行、resume 追加
 ```
 
 ---
