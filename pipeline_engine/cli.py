@@ -438,7 +438,8 @@ def status(
         try:
             await _bootstrap(rm, ctx, restore_runs=True)
             state = await rm.get_run_state(ref)
-            emit("status", state=state.model_dump(mode="json"))
+            from pipeline_engine.view_model import build_pipeline_status_view
+            emit("status", state=build_pipeline_status_view(state).model_dump(mode="json"))
         except PipelineError as e:
             raise emit_error("status", e)
         except Exception as e:
@@ -460,7 +461,12 @@ def inspect(
     """查看 pipeline 实例中 task 的详细信息（输入/输出/日志/堆栈）。"""
     from pipeline_engine.core.run_manager import RunManager
     from pipeline_engine.core.errors import PipelineError
-    from pipeline_engine.cli_json import emit, emit_error, read_json_file, read_log_tail
+    from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.view_model import (
+        build_pipeline_status_view,
+        build_task_detail_view,
+        build_task_status_view,
+    )
 
     async def _inspect() -> None:
         rm = RunManager(_get_workspace(workspace, ctx))
@@ -470,7 +476,7 @@ def inspect(
 
             if step is None:
                 # 无 step：返回整体 state（同 status）
-                emit("inspect", state=state.model_dump(mode="json"))
+                emit("inspect", state=build_pipeline_status_view(state).model_dump(mode="json"))
                 return
 
             step_state = state.steps.get(step)
@@ -483,9 +489,10 @@ def inspect(
 
             if task is None:
                 # 只指定 step：返回该 step 的所有 task 详情
-                tasks_detail = []
-                for tid, ts in step_state.tasks.items():
-                    tasks_detail.append(_build_task_json(tid, ts))
+                tasks_detail = [
+                    build_task_status_view(ts).model_dump(mode="json")
+                    for ts in step_state.tasks.values()
+                ]
                 emit("inspect", step_id=step, step_status=step_state.status.value,
                      tasks=tasks_detail)
                 return
@@ -499,7 +506,7 @@ def inspect(
                     step_id=step,
                     task_id=task,
                 )
-            emit("inspect", task=_build_task_json(task, ts))
+            emit("inspect", task=build_task_detail_view(ts, log_tail_size=100).model_dump(mode="json"))
 
         except PipelineError as e:
             raise emit_error("inspect", e)
@@ -507,27 +514,6 @@ def inspect(
             raise emit_error("inspect", e)
 
     asyncio.run(_inspect())
-
-
-def _build_task_json(task_id: str, ts) -> dict:
-    """将 TaskState 序列化为 inspect 用的 JSON dict（含内联 input/output/log_tail）。"""
-    from pipeline_engine.cli_json import read_json_file, read_log_tail
-    return {
-        "id": task_id,
-        "status": ts.status.value,
-        "progress": ts.progress,
-        "started_at": ts.started_at.isoformat() if ts.started_at else None,
-        "finished_at": ts.finished_at.isoformat() if ts.finished_at else None,
-        "error": ts.error,
-        "stack_trace": ts.stack_trace,
-        "fixed_by": ts.fixed_by,
-        "input_path": ts.input_path,
-        "input": read_json_file(ts.input_path),
-        "output_path": ts.output_path,
-        "output": read_json_file(ts.output_path),
-        "log_path": ts.log_path,
-        "log_tail": read_log_tail(ts.log_path),
-    }
 
 
 # ─── log ──────────────────────────────────────────────────────────────────────

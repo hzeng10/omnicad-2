@@ -531,6 +531,45 @@ CLI 启动时（REPL 与所有一次性子命令）自动扫描 `<base_dir>/*/pi
 
 ---
 
+### 6.12 View-Model 共享层（`view_model.py`）
+
+**背景**：CLI JSON 输出（`status` / `inspect`）和 REPL 终端渲染（`_render_status` / `_render_task_detail`）原先各自直接从 runtime state 对象读取字段，字段子集与转换逻辑在两处各自硬编码，存在长尾发散风险。
+
+**模块职责**：`pipeline_engine/view_model.py` 提供 Pydantic 表示层，作为 runtime state 到两个渲染目标的统一中间层。CLI 和 REPL 均通过 builder 函数取得 view 对象后再做各自的序列化/渲染，不直接调用 `state.model_dump()` 或手工构造展示字典。
+
+**核心类（均为 Pydantic `BaseModel`）**：
+
+| 类 | 对应 runtime model | 用途 |
+|----|--------------------|------|
+| `TaskStatusView` | `TaskState` | 摘要（status 命令 / REPL 表格） |
+| `StepStatusView` | `StepState` | 同上，嵌套 `dict[str, TaskStatusView]` |
+| `PipelineStatusView` | `PipelineRunState` | 同上，嵌套 `dict[str, StepStatusView]` |
+| `TaskDetailView` | `TaskState` + 读穿字段 | inspect --task / REPL 详情 |
+
+**透明性不变式（Transparency Invariant）**：
+
+```
+∀ state: PipelineRunState:
+    build_pipeline_status_view(state).model_dump(mode="json") == state.model_dump(mode="json")
+```
+
+View 类的字段集合、字段顺序与对应 runtime model 完全一致，由 `model_validate(state.model_dump())` 保证。`test_view_model.py` 中的透明性测试是机械化验证此不变式的回归护栏。
+
+**Builder API**：
+
+| 函数 | 输入 | 说明 |
+|------|------|------|
+| `build_task_status_view(ts)` | `TaskState` | 摘要级视图 |
+| `build_step_status_view(ss)` | `StepState` | 递归构建嵌套 TaskStatusView |
+| `build_pipeline_status_view(state)` | `PipelineRunState` | 递归构建完整视图树 |
+| `build_task_detail_view(ts, log_tail_size=100)` | `TaskState` + size | 详情视图，含 input/output/log_tail 读穿 |
+
+**log_tail_size 差异**：CLI 路径传 `log_tail_size=100`（默认）；REPL 路径传 `log_tail_size=200`，以便更详细的交互式调试。差异通过参数显式体现，不再分散于两套实现中。
+
+与 §6.10（JSON 输出模块 / indent=2）和 §6.11（只读恢复模式）共同构成 CLI 输出层的三条设计约束。
+
+---
+
 ## 7. CLI / REPL 指令
 
 ### 7.1 全局参数

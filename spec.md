@@ -145,6 +145,7 @@
 5.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。
 6.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。
 7.  **只读恢复**: `status` / `inspect` / `log` / `list --instance` 等查询命令从磁盘恢复 run 状态时，**必须跳过** `demote_orphans_sync` 降级操作（即 `restore_writeback=False`）。该约束防止 CLI 子命令与 REPL 进程并发运行时相互污染 `state.json`。只有 `resume` / `fix` 命令需要降级并写回（`restore_writeback=True`）。
+8.  **视图与状态解耦**: CLI JSON 输出与 REPL 终端渲染必须通过统一的 view-model 层（`pipeline_engine.view_model`）从 runtime state 派生，不允许直接调用 `state.model_dump()` 或手工拼装展示字典作为对外接口。view-model 与 runtime state 在字段集合/顺序/语义上保持透明等价，以防止两套渲染长尾发散。
 
 ---
 

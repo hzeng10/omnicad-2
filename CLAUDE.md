@@ -115,6 +115,17 @@ When a Step is marked `skip: true`, the engine must verify that `./manual_data/<
 
 `fix <task_id> --input path/to/data.json` or `fix <task_id> --output path/to/data.json` writes the supplied file into the workspace and transitions the task from `Failed` → `New` (input injection) or `Failed` → `Fixed` (output injection), so `resume` can re-schedule it.
 
+### View-model layer
+
+CLI JSON output and REPL rendering both go through `pipeline_engine.view_model`. Use
+`build_pipeline_status_view(state)` / `build_task_detail_view(ts, log_tail_size=...)` rather
+than calling `state.model_dump()` or constructing ad-hoc dicts directly.
+
+Field set and order must remain in sync with runtime models (`pipeline_engine.models.runtime_state`);
+the transparency invariant is enforced by `tests/unit/test_view_model.py`.
+
+`log_tail_size` convention: CLI callers pass `100` (default); REPL callers pass `200`.
+
 ## Code Style
 
 - All function signatures must carry type annotations.

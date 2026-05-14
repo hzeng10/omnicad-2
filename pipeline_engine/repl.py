@@ -350,8 +350,11 @@ def _colorize(status: Status) -> str:
 
 def _render_status(state: PipelineRunState) -> None:
     """渲染 run 整体状态表格。"""
+    from pipeline_engine.view_model import build_pipeline_status_view
+    view = build_pipeline_status_view(state)
+
     table = Table(
-        title=f"Run: {state.run_id}  |  Pipeline: {state.pipeline_id}",
+        title=f"Run: {view.run_id}  |  Pipeline: {view.pipeline_id}",
         box=box.ROUNDED,
         show_lines=True,
     )
@@ -361,23 +364,23 @@ def _render_status(state: PipelineRunState) -> None:
     table.add_column("Progress", justify="right")
     table.add_column("Error", style="dim red", no_wrap=False, max_width=50)
 
-    for step_id, step_state in state.steps.items():
+    for step_id, step_view in view.steps.items():
         first = True
-        for task_id, ts in step_state.tasks.items():
+        for task_id, tv in step_view.tasks.items():
             step_label = step_id if first else ""
             first = False
             table.add_row(
                 step_label,
                 task_id,
-                _colorize(ts.status),
-                f"{ts.progress}%",
-                ts.error or "",
+                _colorize(tv.status),
+                f"{tv.progress}%",
+                tv.error or "",
             )
-        if not step_state.tasks:
-            table.add_row(step_id, "—", _colorize(step_state.status), "", "")
+        if not step_view.tasks:
+            table.add_row(step_id, "—", _colorize(step_view.status), "", "")
 
     console.print(table)
-    console.print(f"Pipeline 状态: {_colorize(state.status)}")
+    console.print(f"Pipeline 状态: {_colorize(view.status)}")
 
 
 async def _watch_status(rm: RunManager, ref: str, refresh: float = 0.5) -> None:
@@ -455,36 +458,39 @@ def _render_inspect(
 
 def _render_task_detail(task_id: str, ts) -> None:
     """渲染单个 task 的详细信息（状态/进度/错误/输入输出/日志）。"""
-    console.rule(f"[bold]{task_id}[/bold]")
-    console.print(f"状态    : {_colorize(ts.status)}")
-    console.print(f"进度    : {ts.progress}%")
-    if ts.error:
-        console.print(f"[red]错误    : {ts.error}[/red]")
-    if ts.stack_trace:
-        console.print(f"[dim]{ts.stack_trace}[/dim]")
-    if ts.fixed_by:
-        console.print(f"[magenta]修复方式: {ts.fixed_by}[/magenta]")
+    from pipeline_engine.view_model import build_task_detail_view
+    view = build_task_detail_view(ts, log_tail_size=200)
 
-    for label, path_attr in (("输入", ts.input_path), ("输出", ts.output_path)):
+    console.rule(f"[bold]{task_id}[/bold]")
+    console.print(f"状态    : {_colorize(view.status)}")
+    console.print(f"进度    : {view.progress}%")
+    if view.error:
+        console.print(f"[red]错误    : {view.error}[/red]")
+    if view.stack_trace:
+        console.print(f"[dim]{view.stack_trace}[/dim]")
+    if view.fixed_by:
+        console.print(f"[magenta]修复方式: {view.fixed_by}[/magenta]")
+
+    for label, path_attr, content in (
+        ("输入", view.input_path, view.input),
+        ("输出", view.output_path, view.output),
+    ):
         if path_attr:
             p = Path(path_attr)
             console.print(f"\n[bold]{label}[/bold] ({p}):")
-            if p.exists():
-                try:
-                    data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
-                    console.print_json(json.dumps(data))
-                except Exception:
-                    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-                    console.print("\n".join(lines[:100]))
+            if content is not None:
+                console.print_json(json.dumps(content))
+            elif p.exists():
+                # read_json_file returned None (parse failure) — fall back to raw text
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                console.print("\n".join(lines[:100]))
             else:
                 console.print("[dim](文件不存在)[/dim]")
 
-    if ts.log_path:
-        log = Path(ts.log_path)
-        if log.exists():
-            console.print(f"\n[bold]日志[/bold] ({log}):")
-            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
-            console.print("\n".join(lines[-200:]))
+    if view.log_path:
+        console.print(f"\n[bold]日志[/bold] ({view.log_path}):")
+        if view.log_tail:
+            console.print("\n".join(view.log_tail))
 
 
 async def _cmd_log(rm: RunManager, args: list[str]) -> None:
