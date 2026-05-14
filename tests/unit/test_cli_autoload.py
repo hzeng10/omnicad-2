@@ -16,14 +16,17 @@ runner = CliRunner()
 def _j(result) -> dict:
     """Parse the JSON envelope from result.output.
 
-    Warnings printed to stderr may be mixed into the output; extract only the
-    line that looks like a JSON object (starts with '{').
+    Warnings may appear before or after the JSON in the mixed stdout/stderr stream.
+    Finds the first '{' at column 0 (start of a line) and uses raw_decode so that
+    any trailing non-JSON text (warnings) is silently ignored.
     """
-    for line in result.output.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("{"):
-            return json.loads(stripped)
-    raise ValueError(f"No JSON line found in output:\n{result.output!r}")
+    import re
+    out = result.output
+    m = re.search(r"^\{", out, re.MULTILINE)
+    if m:
+        obj, _ = json.JSONDecoder().raw_decode(out, m.start())
+        return obj
+    raise ValueError(f"No JSON object found in output:\n{out!r}")
 
 
 def _make_pipeline_yaml(base_dir: Path, pid: str) -> Path:

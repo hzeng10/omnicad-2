@@ -313,16 +313,18 @@ class RunManager:
 
     # ─── 跨进程恢复 ───────────────────────────────────────────────────────────
 
-    def restore_runs_from_disk(self) -> None:
+    def restore_runs_from_disk(self, write_back: bool = True) -> None:
         """从磁盘重建所有持久化 run 的 RunContext。
 
         供 CLI 一次性子命令（stop / resume / fix）调用，使其能操作上一进程
         启动的 run。重建后 main_task 为 None（原进程已消失），调度器和状态
         管理器均完整重建，fix / resume 可正常工作。
 
-        A1 修复：加载 state.json 后立即调用 ``sm.demote_orphans_sync()``，
-        将上一进程崩溃遗留的 RUNNING task/step/pipeline 全部复位为 FAILED，
-        确保 resume 可正确识别并重调度。
+        ``write_back=True``（默认）：调用 ``demote_orphans_sync()`` 将上一进程崩溃
+        遗留的 RUNNING 状态复位为 FAILED 并写回磁盘，供 resume 重调度。
+        ``write_back=False``：只读模式，跳过降级，不修改磁盘上任何文件。
+        用于 status / inspect / log 等只需读取状态的命令，避免污染仍在
+        另一进程（如 REPL）中运行的 run。
         """
         runs_root = storage.get_runs_root(self.workspace)
         if not runs_root.exists():
@@ -345,8 +347,9 @@ class RunManager:
                 except PipelineError:
                     continue
                 sm = StateManager(run_state)
-                # A1：将崩溃遗留的 RUNNING 状态复位为 FAILED
-                sm.demote_orphans_sync()
+                if write_back:
+                    # 将崩溃遗留的 RUNNING 状态复位为 FAILED，写回磁盘供 resume 重调度
+                    sm.demote_orphans_sync()
                 abort_event = asyncio.Event()
                 log_path = storage.get_run_log_path(self.workspace, pipeline_id, run_id)
                 run_logger = RunLogger(run_id, log_path)

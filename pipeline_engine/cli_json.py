@@ -34,7 +34,7 @@ def emit(command: str, **payload: Any) -> None:
     """打印成功 JSON envelope 到 stdout。"""
     obj: dict[str, Any] = {"ok": True, "command": command}
     obj.update(payload)
-    typer.echo(json.dumps(obj, ensure_ascii=False, default=str))
+    typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
 
 def emit_error(command: str, exc: BaseException, exit_code: int = 1) -> "typer.Exit":
@@ -53,7 +53,7 @@ def emit_error(command: str, exc: BaseException, exit_code: int = 1) -> "typer.E
             "type": type(exc).__name__,
         }
     obj: dict[str, Any] = {"ok": False, "command": command, "error": err}
-    typer.echo(json.dumps(obj, ensure_ascii=False, default=str))
+    typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
     return typer.Exit(exit_code)
 
 

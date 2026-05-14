@@ -61,7 +61,7 @@
 | `load <path>` | 系统 | 加载并保存一个 Pipeline 配置文件。 |
 | `list [--pipeline]` | 系统 | 列出已注册的 pipeline（pipeline_id / type / name）。默认行为。 |
 | `list --instance` | 系统 | 列出运行实例（pipeline_id / instance_id / status）。 |
-| `start <id> [--step S] [--task T] [--wait]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动；`--wait` 阻塞到完成。 |
+| `start <id> [--step S] [--task T] [--no-wait]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动；默认阻塞到完成（`--no-wait` 立即返回，但进程退出时 run 会被取消）。 |
 | `stop <instance_id>` | Pipeline 实例 | 中止指定的 pipeline 运行实例（整个 run）。 |
 | `resume <instance_id>` | Pipeline 实例 | 恢复被中止或失败的 pipeline 实例。 |
 | `status <instance_id>` | Pipeline 实例 | 查看指定 pipeline 实例的整体进度和结果。 |
@@ -72,18 +72,31 @@
 
 ### 3.2 CLI JSON 输出契约
 
-所有 `pipeline_cli <subcommand>` 一次性子命令输出以下信封格式（扁平 + `ok` 字段）：
+所有 `pipeline_cli <subcommand>` 一次性子命令输出以下信封格式（扁平 + `ok` 字段），以 **`indent=2`** 格式化输出，便于人工阅读，同时保持 `json.loads()` 兼容。
 
 **成功**：
 ```json
-{"ok": true, "command": "list", "scope": "pipeline", "pipelines": [...]}
+{
+  "ok": true,
+  "command": "list",
+  "scope": "pipeline",
+  "pipelines": [...]
+}
 ```
 
 **失败（exit code = 1）**：
 ```json
-{"ok": false, "command": "start",
- "error": {"message": "pipeline 'x' 未加载", "type": "PipelineError",
-           "pipeline_id": "x", "step_id": null, "task_id": null}}
+{
+  "ok": false,
+  "command": "start",
+  "error": {
+    "message": "pipeline 'x' 未加载",
+    "type": "PipelineError",
+    "pipeline_id": "x",
+    "step_id": null,
+    "task_id": null
+  }
+}
 ```
 
 每个命令的 payload 字段：
@@ -131,6 +144,7 @@
 4.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。进程重启后，遗留在 RUNNING 状态的任务必须自动复位为 FAILED，以便 `resume` 重调度。
 5.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。
 6.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。
+7.  **只读恢复**: `status` / `inspect` / `log` / `list --instance` 等查询命令从磁盘恢复 run 状态时，**必须跳过** `demote_orphans_sync` 降级操作（即 `restore_writeback=False`）。该约束防止 CLI 子命令与 REPL 进程并发运行时相互污染 `state.json`。只有 `resume` / `fix` 命令需要降级并写回（`restore_writeback=True`）。
 
 ---
 

@@ -7,8 +7,8 @@
 - 命令解析使用 shlex.split，支持带引号的路径参数。
 - 终端渲染使用 Rich：进度表格、彩色状态、JSON 格式化。
 
-C9 修复：``_get_flag`` 拒绝将相邻 ``--xxx`` 参数当作值，返回 None 并提示用法。
-C10 修复：``run`` 命令支持多个 pipeline_id，行为与 CLI 一致。
+``_get_flag`` 拒绝将相邻 ``--xxx`` 参数当作值，返回 None 并提示用法。
+``start`` 命令支持多个 pipeline_id，行为与 CLI 一致。
 """
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
             console.print(_HELP)
 
         case "exit" | "quit":
-            # C11：退出前提示仍有活跃 run
+            # 退出前提示仍有活跃 run
             active = [ctx for ctx in rm._runs.values() if ctx.is_active()]
             if active:
                 console.print(
@@ -232,10 +232,7 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
 # ─── 各命令处理函数 ───────────────────────────────────────────────────────────
 
 async def _cmd_start(rm: RunManager, args: list[str]) -> None:
-    """start 命令处理器。
-
-    C10 修复：支持多个 pipeline_id，行为与 CLI start 子命令一致。
-    """
+    """start 命令处理器：支持多个 pipeline_id，行为与 CLI start 子命令一致。"""
     if not args:
         console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
         return
@@ -477,7 +474,6 @@ def _render_task_detail(task_id: str, ts) -> None:
                     data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
                     console.print_json(json.dumps(data))
                 except Exception:
-                    # C12：按行截尾，避免截断 UTF-8 多字节字符
                     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
                     console.print("\n".join(lines[:100]))
             else:
@@ -487,7 +483,6 @@ def _render_task_detail(task_id: str, ts) -> None:
         log = Path(ts.log_path)
         if log.exists():
             console.print(f"\n[bold]日志[/bold] ({log}):")
-            # C12：按行截尾（最后 200 行）
             lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
             console.print("\n".join(lines[-200:]))
 
@@ -610,7 +605,7 @@ def _print_runs(rm: RunManager) -> None:
 def _get_flag(args: list[str], flag: str) -> str | None:
     """返回 --flag 后面的值，若不存在或值以 '--' 开头则返回 None。
 
-    C9 修复：拒绝将相邻的另一个 --xxx 参数当作值，避免解析歧义。
+    拒绝将相邻的另一个 --xxx 参数当作值，避免解析歧义。
     例如：``--step --task foo`` 中，--step 的值不应被解析为 ``--task``。
     """
     try:

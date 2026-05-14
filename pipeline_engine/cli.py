@@ -112,9 +112,19 @@ async def _autoload_pipelines(rm, base_dir: Path) -> list[dict]:
     return results
 
 
-async def _bootstrap(rm, ctx: typer.Context, restore_runs: bool = False) -> None:
-    """重建 RunManager 状态：先从 registry 恢复，再 autoload。"""
-    _reload_registry(rm, restore_runs=restore_runs)
+async def _bootstrap(
+    rm,
+    ctx: typer.Context,
+    restore_runs: bool = False,
+    restore_writeback: bool = False,
+) -> None:
+    """重建 RunManager 状态：先从 registry 恢复，再 autoload。
+
+    ``restore_writeback=True`` 时，恢复 run 状态后会把遗留 RUNNING 降级为 FAILED
+    并写回磁盘（供 resume/fix 使用）。默认 False 表示只读恢复，不写磁盘，
+    适用于 status/inspect/log/list 等查询命令。
+    """
+    _reload_registry(rm, restore_runs=restore_runs, restore_writeback=restore_writeback)
     if not _is_no_autoload(ctx):
         pd = _get_pipelines_dir(ctx)
         base_dir = pd if pd is not None else (Path.cwd() / "pipelines")
@@ -181,10 +191,13 @@ def load(
         if all_ok:
             emit("load", loaded=loaded)
         else:
-            from pipeline_engine.cli_json import emit_error as _ee
-            obj = {"ok": False, "command": "load", "loaded": loaded,
-                   "error": {"message": "一个或多个文件加载失败", "type": "LoadError"}}
-            typer.echo(json.dumps(obj, ensure_ascii=False, default=str))
+            obj = {
+                "ok": False,
+                "command": "load",
+                "loaded": loaded,
+                "error": {"message": "一个或多个文件加载失败", "type": "LoadError"},
+            }
+            typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
             raise typer.Exit(1)
 
     asyncio.run(_load())
@@ -253,7 +266,11 @@ def start_cmd(
     workspace: Optional[Path] = _workspace_option,
     step: Optional[str] = typer.Option(None, "--step", "-s", help="仅运行指定 step。"),
     task: Optional[str] = typer.Option(None, "--task", "-t", help="仅运行指定 task（需配合 --step）。"),
-    wait: bool = typer.Option(False, "--wait", help="阻塞直到所有 run 完成。"),
+    wait: bool = typer.Option(
+        True,
+        "--wait/--no-wait",
+        help="阻塞直到所有 run 完成（默认开启）。--no-wait 立即返回，但进程退出时 run 会被取消。",
+    ),
 ) -> None:
     """启动一个或多个 pipeline run（后台并发执行）。"""
     from pipeline_engine.core.run_manager import RunManager
@@ -285,10 +302,23 @@ def start_cmd(
                 any_error = True
 
         if any_error:
-            obj = {"ok": False, "command": "start", "runs": runs,
-                   "error": {"message": "一个或多个 pipeline 启动失败", "type": "StartError"}}
-            typer.echo(json.dumps(obj, ensure_ascii=False, default=str))
+            obj = {
+                "ok": False,
+                "command": "start",
+                "runs": runs,
+                "error": {"message": "一个或多个 pipeline 启动失败", "type": "StartError"},
+            }
+            typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
             raise typer.Exit(1)
+        elif not wait:
+            emit(
+                "start",
+                runs=runs,
+                warning=(
+                    "runs will be cancelled when CLI exits; "
+                    "use REPL or --wait for persistent execution"
+                ),
+            )
         else:
             emit("start", runs=runs)
 
@@ -300,7 +330,7 @@ def start_cmd(
 @app.command()
 def stop(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要中止的 pipeline 实例 ID。"),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """中止指定 pipeline 实例（整个 run）。"""
@@ -327,9 +357,9 @@ def stop(
 @app.command()
 def resume(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要恢复的 pipeline 实例 ID。"),
     workspace: Optional[Path] = _workspace_option,
-    include_paused: bool = typer.Option(False, "--include-paused"),
+    include_paused: bool = typer.Option(False, "--include-paused", help="同时恢复 PAUSED 状态的任务。"),
 ) -> None:
     """恢复 FAILED（或 PAUSED）的 pipeline 实例，并等待其完成。"""
     from pipeline_engine.core.run_manager import RunManager
@@ -339,7 +369,7 @@ def resume(
     async def _resume() -> None:
         rm = RunManager(_get_workspace(workspace, ctx))
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
+            await _bootstrap(rm, ctx, restore_runs=True, restore_writeback=True)
             run_id = await rm.resume(ref, include_paused=include_paused)
             run_ctx = rm._runs[run_id]
             await run_ctx.await_main()
@@ -358,11 +388,11 @@ def resume(
 @app.command()
 def fix(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID"),
-    task_locator: str = typer.Option(..., "--task", "-t"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要修复的 pipeline 实例 ID。"),
+    task_locator: str = typer.Option(..., "--task", "-t", help="目标 task（格式：step_id/task_id 或 task_id）。"),
     workspace: Optional[Path] = _workspace_option,
-    output_path: Optional[Path] = typer.Option(None, "--output"),
-    input_path: Optional[Path] = typer.Option(None, "--input"),
+    output_path: Optional[Path] = typer.Option(None, "--output", help="注入 output.json 路径（任务状态转为 FIXED）。"),
+    input_path: Optional[Path] = typer.Option(None, "--input", help="注入 input.json 路径（任务状态重置为 NEW）。"),
 ) -> None:
     """向 pipeline 实例中的失败任务注入 output（FIXED）或替换 input（NEW）。"""
     from pipeline_engine.core.run_manager import RunManager
@@ -372,7 +402,7 @@ def fix(
     async def _fix() -> None:
         rm = RunManager(_get_workspace(workspace, ctx))
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
+            await _bootstrap(rm, ctx, restore_runs=True, restore_writeback=True)
             await rm.fix(
                 ref, task_locator,
                 output_path=str(output_path) if output_path else None,
@@ -395,7 +425,7 @@ def fix(
 @app.command()
 def status(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要查看状态的 pipeline 实例 ID。"),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """查看指定 pipeline 实例的整体状态与进度（JSON 输出）。"""
@@ -422,10 +452,10 @@ def status(
 @app.command()
 def inspect(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要查看的 pipeline 实例 ID。"),
     workspace: Optional[Path] = _workspace_option,
-    step: Optional[str] = typer.Option(None, "--step", "-s"),
-    task: Optional[str] = typer.Option(None, "--task", "-t"),
+    step: Optional[str] = typer.Option(None, "--step", "-s", help="指定要查看的 step ID。"),
+    task: Optional[str] = typer.Option(None, "--task", "-t", help="指定要查看的 task ID（需配合 --step）。"),
 ) -> None:
     """查看 pipeline 实例中 task 的详细信息（输入/输出/日志/堆栈）。"""
     from pipeline_engine.core.run_manager import RunManager
@@ -557,7 +587,11 @@ def log_cmd(
 
 # ─── 内部工具 ─────────────────────────────────────────────────────────────────
 
-def _reload_registry(rm, restore_runs: bool = False) -> None:
+def _reload_registry(
+    rm,
+    restore_runs: bool = False,
+    restore_writeback: bool = False,
+) -> None:
     """从磁盘重新加载 pipeline 注册表（及可选的 run 状态）。"""
     from pipeline_engine.core import storage
     from pipeline_engine.core.yaml_parser import load_pipeline_spec
@@ -574,4 +608,4 @@ def _reload_registry(rm, restore_runs: bool = False) -> None:
             except Exception:
                 pass
     if restore_runs:
-        rm.restore_runs_from_disk()
+        rm.restore_runs_from_disk(write_back=restore_writeback)

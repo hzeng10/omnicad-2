@@ -498,7 +498,7 @@ CLI 启动时（REPL 与所有一次性子命令）自动扫描 `<base_dir>/*/pi
 
 **失败处理**：单个 YAML 解析失败 → 跳过，写 WARNING 到 stderr；不影响其余文件及子命令 exit code。`_autoload_pipelines(rm, base_dir)` 返回 `list[{path, pipeline_id, ok, error?}]`。
 
-**集成点**：`_bootstrap(rm, ctx, restore_runs)` 先调 `_reload_registry`（从 registry.json 恢复历史注册），再调 `_autoload_pipelines`；`rm.load` 幂等，两者顺序明确。REPL 模式在 `run_repl()` 进入 prompt 循环前调用，并打印"已加载 N 个 pipeline"摘要。
+**集成点**：`_bootstrap(rm, ctx, restore_runs, restore_writeback)` 先调 `_reload_registry`（从 registry.json 恢复历史注册），再调 `_autoload_pipelines`；`rm.load` 幂等，两者顺序明确。REPL 模式在 `run_repl()` 进入 prompt 循环前调用，并打印"已加载 N 个 pipeline"摘要。新增子命令须依据是否需写回，显式选择 `restore_writeback=True`（仅 resume/fix）或默认 `False`（查询类命令）。
 
 ### 6.10 JSON 输出模块（`cli_json.py`）
 
@@ -509,11 +509,25 @@ CLI 启动时（REPL 与所有一次性子命令）自动扫描 `<base_dir>/*/pi
 - 失败：`{"ok": false, "command": "<cmd>", "error": {"message": "...", "type": "PipelineError", "pipeline_id": null, ...}}`
 
 **核心函数**：
-- `emit(command, **payload)`：`typer.echo(json.dumps(...))`，成功路径。
+- `emit(command, **payload)`：`typer.echo(json.dumps(..., indent=2))`，成功路径。
 - `emit_error(command, exc)`：同样输出到 stdout（保证 AI Agent 可一次 `json.loads(stdout)` 拿到结构化错误），返回 `typer.Exit(1)` 供调用方 raise。
 - `parse_log_line(raw)` / `read_json_file(path)` / `read_log_tail(path, tail)`：`log` / `inspect` 子命令的内联序列化辅助。
 
-**设计约定**：autoload 警告写 stderr；所有正式输出（成功或失败 envelope）写 stdout。`inspect` 含 `task.input` / `task.output`（内联小 JSON）和 `task.log_tail`（最后 100 行字符串数组）；`status` 通过 `PipelineRunState.model_dump(mode="json")` 直接序列化，不手写字段。
+**设计约定**：autoload 警告写 stderr；所有正式输出（成功或失败 envelope）写 stdout，**默认 `indent=2`** 格式化，便于人工阅读；`json.loads()` 仍正常解析多行 JSON，不影响 AI Agent 调用。`inspect` 含 `task.input` / `task.output`（内联小 JSON）和 `task.log_tail`（最后 100 行字符串数组）；`status` 通过 `PipelineRunState.model_dump(mode="json")` 直接序列化，不手写字段。
+
+### 6.11 只读恢复模式（`restore_writeback`）
+
+**背景**：CLI 一次性子命令（如 `status`）通过 `restore_runs_from_disk()` 从磁盘重建 RunContext。原始实现在重建时无条件调用 `demote_orphans_sync()`，将所有 RUNNING 状态强制降为 FAILED 并写回 `state.json`。当 REPL 正在另一进程中运行同一个 pipeline 时，CLI 的查询请求会污染正在进行中的 run 状态（"跨进程状态污染" bug）。
+
+**解决方案**：在 `restore_runs_from_disk(write_back: bool = True)` 增加 `write_back` 参数，结合 `_bootstrap(restore_writeback)` 参数控制各命令行为：
+
+| 命令 | `restore_runs` | `restore_writeback` | 说明 |
+|------|---------------|--------------------|----|
+| `status`, `inspect`, `log`, `list --instance`, `stop` | `True` | `False` | 只读：不改写磁盘 |
+| `resume`, `fix` | `True` | `True` | 写回：降级孤儿后重调度 |
+| `start`, `load`, `lint` | `False` | N/A | 不恢复旧 run |
+
+**不变式**：`resume` 和 `fix` 仍需 `write_back=True`，确保跨进程崩溃后的孤儿 RUNNING 状态被正确识别为 FAILED 并可重调度。
 
 ---
 
@@ -541,7 +555,7 @@ pipeline_cli load <path> [<path>...]
 pipeline_cli lint <path>
 pipeline_cli list [--pipeline]                       # 列已注册 pipeline
 pipeline_cli list --instance                         # 列运行实例
-pipeline_cli start <pipeline_id> [--step S] [--task T] [--wait]
+pipeline_cli start <pipeline_id> [--step S] [--task T] [--no-wait]
 pipeline_cli stop <instance_id>
 pipeline_cli resume <instance_id> [--include-paused]
 pipeline_cli status <instance_id>
@@ -550,7 +564,7 @@ pipeline_cli fix <instance_id> --task T [--output PATH] [--input PATH]
 pipeline_cli log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]
 ```
 
-`start` 默认 detach（立即返回 `runs` 数组）；`--wait` 阻塞等待并附 `final_status`。
+`start` 默认阻塞等待 run 完成并附 `final_status`（`--wait` 行为为默认）；`--no-wait` 立即返回但 run 会随进程退出而取消（JSON 响应含 `warning` 字段提示）。
 
 > **start 与 stop 的对称性**：`start` 支持 `--step/--task` 细粒度启动；`stop` 只接受 instance_id，中止整个 run。task 级 PAUSED 状态由调度器 abort_event 路径内部生产，不作为用户接口。
 
