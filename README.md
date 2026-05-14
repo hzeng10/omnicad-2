@@ -42,6 +42,35 @@ pipeline_cli --help
 
 > 示例 pipeline 位于 `pipelines/cad_identify_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
 
+### Autoload（自动加载）
+
+CLI 启动时（REPL 与一次性子命令均适用）自动扫描 `./pipelines/*/pipeline.yaml`（一级深度），将每个找到的 YAML 视同 `load` 命令注册到引擎，无需手动 `load`。
+
+| 选项 | 说明 |
+|---|---|
+| `--pipelines-dir DIR` | 指定发现目录（默认 `./pipelines`），也可用 `PIPELINE_AUTOLOAD_DIR` env var |
+| `--no-autoload` | 禁用自动加载，也可用 `PIPELINE_NO_AUTOLOAD=1` env var |
+
+### CLI 输出格式
+
+`pipeline_cli <subcommand>` 一次性子命令默认输出**单个 JSON 对象**到 stdout，便于 AI Agent 直接 `json.loads()` 解析。REPL 交互模式（无子命令）保持 Rich 文本渲染，行为不变。
+
+```bash
+# JSON 输出示例
+$ pipeline_cli list | jq .ok
+true
+$ pipeline_cli list | jq '.pipelines[].pipeline_id'
+"cad_identify_cost_estimation"
+
+# 失败时 ok=false，exit code=1
+$ pipeline_cli start no_such | jq .error.message
+"pipeline 'no_such' 未加载"
+
+# 禁用 autoload（单次调用）
+$ pipeline_cli --no-autoload list
+{"ok": true, "command": "list", "scope": "pipeline", "pipelines": []}
+```
+
 ---
 
 ## 使用示例
@@ -49,32 +78,36 @@ pipeline_cli --help
 ### 场景一：校验与注册
 
 ```bash
-# 校验 YAML 语法与 DAG 合法性（不执行）
+# 校验 YAML 语法与 DAG 合法性（不执行）— JSON 输出
 $ pipeline_cli lint pipelines/cad_identify_pipeline/pipeline.yaml
-OK — pipeline 'cad_identify_cost_estimation' 校验通过。
+{"ok": true, "command": "lint", "pipeline_id": "cad_identify_cost_estimation", "valid": true, "path": "..."}
 
 # 注册 pipeline 到本地 registry
 $ pipeline_cli load pipelines/cad_identify_pipeline/pipeline.yaml --workspace /tmp/cad_demo
-Loaded: cad_identify_cost_estimation
+{"ok": true, "command": "load", "loaded": [{"pipeline_id": "cad_identify_cost_estimation", "ok": true, ...}]}
 
-# 列出已注册的 pipeline（含 type 字段）
-$ pipeline_cli list --pipeline --workspace /tmp/cad_demo
-  cad_identify_cost_estimation             CAD图识别及算量           CAD 设备成本汇总（示例）
+# autoload 已注册时无需手动 load（默认扫描 ./pipelines/*/pipeline.yaml）
+$ pipeline_cli list --workspace /tmp/cad_demo | jq .pipelines
+[{"pipeline_id": "cad_identify_cost_estimation", "type": "CAD图识别及算量", "name": "CAD 设备成本汇总（示例）"}]
 
-# 列出运行实例（支持跨进程读取）
-$ pipeline_cli list --instance --workspace /tmp/cad_demo
+# 列出运行实例
+$ pipeline_cli list --instance --workspace /tmp/cad_demo | jq .instances
+[]
 ```
 
 ### 场景二：运行完整 pipeline 并查看结果
 
 ```bash
-# 运行并阻塞等待完成
-$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_identify_cost_estimation --workspace /tmp/cad_demo --wait
-Started: 20260512T083056_948823_1b1fe2  (pipeline: cad_identify_cost_estimation)
-  20260512T083056_948823_1b1fe2: success
+# 运行并阻塞等待完成 — JSON 输出
+$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_identify_cost_estimation --workspace /tmp/cad_demo --wait \
+  | jq '{run_id: .runs[0].run_id, status: .runs[0].final_status}'
+{"run_id": "cad_identify_cost_estimation_20260513-093024_7392", "status": "success"}
 
 # 查看运行状态（支持跨进程：从磁盘恢复上次运行的状态）
-$ pipeline_cli status 20260512T083056_948823_1b1fe2 --workspace /tmp/cad_demo
+$ RUN=cad_identify_cost_estimation_20260513-093024_7392
+$ pipeline_cli status "$RUN" --workspace /tmp/cad_demo | jq .state.status
+"success"
+$ pipeline_cli status "$RUN" --workspace /tmp/cad_demo
 ╭────────────────┬────────────────┬─────────┬──────────┬───────╮
 │ Step           │ Task           │ Status  │ Progress │ Error │
 ├────────────────┼────────────────┼─────────┼──────────┼───────┤

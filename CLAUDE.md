@@ -21,12 +21,37 @@ A Python 3.10+ CLI tool for orchestrating DAG-based workflows defined in YAML. T
 ## Development Commands
 
 ```bash
-pip install -e .                                          # install with dev deps
-pytest                                                    # run all tests
-pytest tests/test_scheduler.py::test_parallel_tasks -v   # run a single test
-pipeline_cli start path/to/pipeline.yaml                 # execute a pipeline
-pipeline_cli lint path/to/pipeline.yaml                  # validate YAML schema
+pip install -e .                                                   # install with dev deps
+pytest                                                             # run all tests
+pytest tests/unit/test_cli.py::test_load_single_pipeline -v       # run a single test
+pytest --cov=pipeline_engine --cov-fail-under=90                  # run with coverage gate
+pipeline_cli lint path/to/pipeline.yaml                           # validate YAML schema (JSON out)
+pipeline_cli list                                                  # list registered pipelines (JSON)
+pipeline_cli --no-autoload list                                    # skip autoload discovery
 ```
+
+### CLI output modes
+
+All `pipeline_cli <subcommand>` one-shot invocations output a **single JSON object** to stdout
+(flat envelope with `ok` field), suitable for `json.loads()` by AI Agents:
+
+```json
+{"ok": true,  "command": "list", "scope": "pipeline", "pipelines": [...]}
+{"ok": false, "command": "start", "error": {"message": "...", "type": "PipelineError", ...}}
+```
+
+Running `pipeline_cli` without a subcommand enters the REPL — Rich text rendering, behaviour unchanged.
+
+**New CLI subcommands must call `cli_json.emit()` / `cli_json.emit_error()` for stdout output.**
+
+### Autoload
+
+On startup, the CLI auto-discovers `./pipelines/*/pipeline.yaml` (one-level deep) and registers
+each as if `load` were called. Override with `--pipelines-dir DIR` (or `PIPELINE_AUTOLOAD_DIR`).
+Disable entirely with `--no-autoload` (or `PIPELINE_NO_AUTOLOAD=1`).
+
+All unit tests that invoke the CLI must pass `--no-autoload` as the first argument (before the
+subcommand name) to prevent real `./pipelines/` from polluting tmp-path test workspaces.
 
 ## Architecture Overview
 

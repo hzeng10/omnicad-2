@@ -74,6 +74,7 @@ omnicad-2/
 │   │   ├── state_manager.py        # StateManager（asyncio.Lock 保护）
 │   │   ├── storage.py              # 工作目录读写、原子落盘、路径辅助
 │   │   └── errors.py               # PipelineError 体系
+│   ├── cli_json.py                 # emit / emit_error — 子命令 JSON 输出统一出口
 │   └── builtin/
 │       └── manual_data_loader.py   # skip 模式从 manual_data/ 加载
 ├── pipelines/                      # Demo pipeline 仓库（各自独立，与引擎解耦）
@@ -110,7 +111,9 @@ omnicad-2/
     │   ├── test_manual_data_loader.py
     │   ├── test_run_logger.py      # RunLogger attach/detach/task_context/stdout 路由
     │   ├── test_run_manager.py     # instance_id 格式 + 冲突重试
-    │   └── test_cli.py
+    │   ├── test_cli.py
+    │   ├── test_cli_autoload.py    # autoload 发现规则 / --no-autoload / env var / 坏 YAML 跳过
+    │   └── test_cli_json_output.py # 每个子命令的 JSON 信封形状
     ├── integration/
     │   ├── test_scheduler.py
     │   ├── test_skip_mode.py
@@ -120,6 +123,7 @@ omnicad-2/
     │   ├── test_cross_process_resume.py
     │   ├── test_state_guards.py
     │   ├── test_repl_commands.py
+    │   ├── test_repl_autoload.py   # _autoload_pipelines 发现 / 幂等 / 失败跳过
     │   ├── test_repl_completion.py  # Tab 补全集成测试
     │   ├── test_repl_log_command.py # log 命令分页 / 过滤 / 补全
     │   └── test_repl_rendering.py
@@ -482,6 +486,35 @@ class PipelineError(Exception):
 
 **`task_context(step_id, task_id)`**：同步 contextmanager，在 `_dispatch_task` 中以 `with` 包裹 task 执行段；进入时打 "task start"，正常退出打 "task done"，异常退出打 "task failed"（并 re-raise 供外层 `fail_task` 处理）。
 
+### 6.9 Autoload（`cli.py:_autoload_pipelines`）
+
+CLI 启动时（REPL 与所有一次性子命令）自动扫描 `<base_dir>/*/pipeline.yaml` 并注册。
+
+**发现规则**：`base_dir.glob("*/pipeline.yaml")`，一级深度。`base_dir` 解析优先级：
+1. 全局选项 `--pipelines-dir DIR`（或 env `PIPELINE_AUTOLOAD_DIR`）
+2. 默认 `Path.cwd() / "pipelines"`
+
+**禁用开关**：`--no-autoload`（或 env `PIPELINE_NO_AUTOLOAD`），或 `base_dir` 不存在时静默。
+
+**失败处理**：单个 YAML 解析失败 → 跳过，写 WARNING 到 stderr；不影响其余文件及子命令 exit code。`_autoload_pipelines(rm, base_dir)` 返回 `list[{path, pipeline_id, ok, error?}]`。
+
+**集成点**：`_bootstrap(rm, ctx, restore_runs)` 先调 `_reload_registry`（从 registry.json 恢复历史注册），再调 `_autoload_pipelines`；`rm.load` 幂等，两者顺序明确。REPL 模式在 `run_repl()` 进入 prompt 循环前调用，并打印"已加载 N 个 pipeline"摘要。
+
+### 6.10 JSON 输出模块（`cli_json.py`）
+
+所有一次性子命令通过此模块统一格式化输出，REPL 路径不涉及。
+
+**信封格式**：
+- 成功：`{"ok": true, "command": "<cmd>", ...payload}`
+- 失败：`{"ok": false, "command": "<cmd>", "error": {"message": "...", "type": "PipelineError", "pipeline_id": null, ...}}`
+
+**核心函数**：
+- `emit(command, **payload)`：`typer.echo(json.dumps(...))`，成功路径。
+- `emit_error(command, exc)`：同样输出到 stdout（保证 AI Agent 可一次 `json.loads(stdout)` 拿到结构化错误），返回 `typer.Exit(1)` 供调用方 raise。
+- `parse_log_line(raw)` / `read_json_file(path)` / `read_log_tail(path, tail)`：`log` / `inspect` 子命令的内联序列化辅助。
+
+**设计约定**：autoload 警告写 stderr；所有正式输出（成功或失败 envelope）写 stdout。`inspect` 含 `task.input` / `task.output`（内联小 JSON）和 `task.log_tail`（最后 100 行字符串数组）；`status` 通过 `PipelineRunState.model_dump(mode="json")` 直接序列化，不手写字段。
+
 ---
 
 ## 7. CLI / REPL 指令
@@ -489,26 +522,35 @@ class PipelineError(Exception):
 ### 7.1 全局参数
 
 ```
-pipeline_cli [--workspace PATH] <subcommand>
+pipeline_cli [--workspace PATH] [--pipelines-dir DIR] [--no-autoload] <subcommand>
 ```
 
-### 7.2 一次性子命令
+| 全局选项 | env var | 默认值 | 说明 |
+|---|---|---|---|
+| `--workspace / -w` | — | CWD | 工作目录 |
+| `--pipelines-dir` | `PIPELINE_AUTOLOAD_DIR` | `./pipelines` | Autoload 扫描目录 |
+| `--no-autoload` | `PIPELINE_NO_AUTOLOAD` | 关闭（默认开启 autoload） | 禁用 autoload |
+
+### 7.2 一次性子命令（JSON 输出）
+
+所有子命令默认输出 JSON（扁平 + `ok` 字段信封）到 stdout；失败时 exit code = 1。
 
 ```
-pipeline_cli                                         # 进入 REPL
+pipeline_cli                                         # 进入 REPL（Rich 渲染）
 pipeline_cli load <path> [<path>...]
-pipeline_cli start <pipeline_id> [--step S] [--task T] [--wait]
 pipeline_cli lint <path>
-pipeline_cli list [--pipeline]                       # 列已注册 pipeline（pipeline_id / type / name）
-pipeline_cli list --instance                         # 列运行实例（pipeline_id / instance_id / status）
+pipeline_cli list [--pipeline]                       # 列已注册 pipeline
+pipeline_cli list --instance                         # 列运行实例
+pipeline_cli start <pipeline_id> [--step S] [--task T] [--wait]
 pipeline_cli stop <instance_id>
+pipeline_cli resume <instance_id> [--include-paused]
 pipeline_cli status <instance_id>
 pipeline_cli inspect <instance_id> [--step S] [--task T]
-pipeline_cli resume <instance_id> [--include-paused]
 pipeline_cli fix <instance_id> --task T [--output PATH] [--input PATH]
+pipeline_cli log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]
 ```
 
-`start` 默认 detach（打印 run_id 即返回）；`--wait` 阻塞等待。
+`start` 默认 detach（立即返回 `runs` 数组）；`--wait` 阻塞等待并附 `final_status`。
 
 > **start 与 stop 的对称性**：`start` 支持 `--step/--task` 细粒度启动；`stop` 只接受 instance_id，中止整个 run。task 级 PAUSED 状态由调度器 abort_event 路径内部生产，不作为用户接口。
 
@@ -695,22 +737,51 @@ class RecCableTask(BaseTask):
 ### 10.5 演示脚本
 
 ```bash
-# REPL 交互演示（instance_id 格式：<pipeline_id>_yyyyMMdd-hhmmss_<4digit>）
-python -m pipeline_cli
-> load pipelines/cad_identify_pipeline/pipeline.yaml
+# ── 一次性子命令（JSON 输出，适合 AI Agent 解析）────────────────────────────────
+
+# autoload：启动时自动扫描 ./pipelines/*/pipeline.yaml（默认）
+pipeline_cli list | jq .ok                                # true
+pipeline_cli list | jq '.pipelines[].pipeline_id'         # 列出所有 pipeline id
+
+# 禁用 autoload
+pipeline_cli --no-autoload list                           # pipelines: []
+PIPELINE_NO_AUTOLOAD=1 pipeline_cli list                  # 等价 --no-autoload
+
+# 自定义发现目录
+pipeline_cli --pipelines-dir /path/to/custom list         # 从自定义目录发现
+PIPELINE_AUTOLOAD_DIR=/another pipeline_cli list          # 通过 env var
+
+# 启动并阻塞等待
+RUN=$(pipeline_cli start cad_identify_cost_estimation --wait | jq -r '.runs[0].run_id')
+
+# 查看状态 / inspect / log（JSON 格式）
+pipeline_cli status "$RUN" | jq .state.status
+pipeline_cli inspect "$RUN" --step recognize --task rec_cable | jq .task.status
+pipeline_cli log "$RUN" --tail 10 | jq '.lines[0]'
+
+# 失败 envelope
+pipeline_cli start no_such_pipe | jq .ok               # false
+pipeline_cli start no_such_pipe | jq .error.message    # "pipeline 'no_such_pipe' 未加载"
+
+# ── REPL 交互演示（Rich 渲染，行为不变）──────────────────────────────────────────
+
+# pipeline_cli 无子命令 → 进入 REPL；autoload 在启动时自动完成
+pipeline_cli --workspace /tmp/cad_demo
+> list                                                   # Rich 表格
 > start cad_identify_cost_estimation
 # start 返回 instance_id，例：cad_identify_cost_estimation_20260513-093024_7392
-> status <Tab>                   # Tab 补全 instance_id
+> status <Tab>                                           # Tab 补全 instance_id
 > inspect <instance_id> --step recognize --task rec_cable
+> log <instance_id>                                      # Rich 彩色行，ERROR 红色
 
 # 失败恢复演示
-PIPELINE_DEMO_FAIL=rec_cable python -m pipeline_cli
+PIPELINE_DEMO_FAIL=rec_cable pipeline_cli --workspace /tmp/cad_demo2
 > start cad_identify_cost_estimation
 > inspect <instance_id> --step recognize --task rec_cable
 > fix <instance_id> --task recognize/rec_cable \
      --output pipelines/cad_identify_pipeline/mock_data/recover_cable.json
 > resume <instance_id>
-> status <instance_id>           # 最终 Success
+> status <instance_id>                                   # 最终 Success
 ```
 
 ### 10.6 验收点

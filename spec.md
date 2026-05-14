@@ -11,6 +11,7 @@
 *   **统一接口**: 所有任务必须继承 `BaseTask` 抽象基类。
 *   **动态加载**: 支持在 YAML 中通过类路径（如 `module.TaskClass`）指定执行器，引擎需在运行时动态实例化。
 *   **数据契约**: 任务间通过 `input.json` 和 `output.json` 传递数据，需保证相同类型任务的 Schema 一致性。
+*   **自动加载（默认）**: CLI 启动时（REPL 与子命令均适用）自动扫描 `./pipelines/*/pipeline.yaml`（一级深度）并注册，等价于逐一调用 `load` 命令。可通过 `--pipelines-dir DIR`（或 env `PIPELINE_AUTOLOAD_DIR`）改变目录，`--no-autoload`（或 env `PIPELINE_NO_AUTOLOAD`）禁用。单个 YAML 解析失败时跳过并写 WARNING 到 stderr，不阻断其余文件或子命令本身。
 
 ### 2.2 多层级执行控制 (Granular Execution)
 *   **加载与持久化**: 支持从指定路径加载 YAML，并在本地保存已加载的 Pipeline 配置与状态。
@@ -52,21 +53,56 @@
 系统采用“子命令 + 交互式 REPL”的混合模式。
 
 ### 3.1 核心指令集
+
+**输出模式说明**：`pipeline_cli <subcommand>` 一次性子命令默认输出单个 JSON 对象（见 §3.3）到 stdout，便于 AI Agent 解析。REPL 交互模式（无子命令进入的提示符模式）保持 Rich 文本渲染，行为不变。
+
 | 指令 | 目标 | 说明 |
 | :--- | :--- | :--- |
 | `load <path>` | 系统 | 加载并保存一个 Pipeline 配置文件。 |
 | `list [--pipeline]` | 系统 | 列出已注册的 pipeline（pipeline_id / type / name）。默认行为。 |
 | `list --instance` | 系统 | 列出运行实例（pipeline_id / instance_id / status）。 |
-| `start <id> [--step S] [--task T]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动。 |
+| `start <id> [--step S] [--task T] [--wait]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动；`--wait` 阻塞到完成。 |
 | `stop <instance_id>` | Pipeline 实例 | 中止指定的 pipeline 运行实例（整个 run）。 |
 | `resume <instance_id>` | Pipeline 实例 | 恢复被中止或失败的 pipeline 实例。 |
 | `status <instance_id>` | Pipeline 实例 | 查看指定 pipeline 实例的整体进度和结果。 |
-| `inspect <instance_id>` | Pipeline 实例 | 查看 Step 或 Task 的详细错误、输入输出及进度。 |
+| `inspect <instance_id> [--step S] [--task T]` | Pipeline 实例 | 查看 Step 或 Task 的详细错误、输入输出及进度。 |
 | `fix <instance_id>` | 错误处理 | 手动注入数据以修复出错的任务状态（→ Fixed 或 → New）。 |
-| `log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]` | Pipeline 实例 | 分页显示 run.log；ERROR 行红色高亮；默认最后 100 行。 |
+| `log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]` | Pipeline 实例 | REPL：分页显示 run.log，ERROR 行红色高亮；CLI 子命令：JSON 结构化行记录。 |
 | `clear` | REPL | 清除当前控制台显示内容。 |
 
-### 3.2 交互特性
+### 3.2 CLI JSON 输出契约
+
+所有 `pipeline_cli <subcommand>` 一次性子命令输出以下信封格式（扁平 + `ok` 字段）：
+
+**成功**：
+```json
+{"ok": true, "command": "list", "scope": "pipeline", "pipelines": [...]}
+```
+
+**失败（exit code = 1）**：
+```json
+{"ok": false, "command": "start",
+ "error": {"message": "pipeline 'x' 未加载", "type": "PipelineError",
+           "pipeline_id": "x", "step_id": null, "task_id": null}}
+```
+
+每个命令的 payload 字段：
+
+| 命令 | 成功 payload 字段（除 `ok`/`command`） |
+| :--- | :--- |
+| `load` | `loaded: [{path, pipeline_id, ok, error?}]` |
+| `lint` | `path, pipeline_id, valid` |
+| `list --pipeline` | `scope: "pipeline", pipelines: [{pipeline_id, type, name}]` |
+| `list --instance` | `scope: "instance", instances: [{pipeline_id, instance_id, status}]` |
+| `start` | `runs: [{pipeline_id, run_id, ok, final_status?}]`（`--wait` 时含 `final_status`） |
+| `stop` | `stopped: instance_id` |
+| `resume` | `resumed: run_id, final_status` |
+| `status` | `state: PipelineRunState`（含完整 steps/tasks 树，datetime 为 ISO 字符串） |
+| `inspect` | 无 step：`state: ...`；有 step：`step_id, step_status, tasks: [...]`；有 step+task：`task: {id, status, progress, error, input, output, log_tail, ...}` |
+| `fix` | `instance_id, task, mode: "output"\|"input", new_status: "fixed"\|"new"` |
+| `log` | `run_id, log_path, total, start, end, lines: [{timestamp, level, ctx, message, raw}]` |
+
+### 3.3 交互特性
 *   **非阻塞 REPL**: 任务在后台异步执行，前台 REPL 始终保持响应，允许用户在任务执行时输入查询或干预指令。
 *   **终端风格**: 采用文本行交互，支持命令补全与历史记录。
 *   **Tab 补全与联想**: REPL 支持 Tab 键补全及边输入边联想（complete_while_typing）。补全范围覆盖：命令名、pipeline_id（已 `load` 的）、instance_id（已启动的实例，含 `pipeline=<pid> | status=<status>` 旁注）、`--step`/`--task` 参数值（从 PipelineSpec 动态读取）、以及 `load` / `fix --output` / `fix --input` 的文件路径。

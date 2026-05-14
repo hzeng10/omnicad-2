@@ -59,8 +59,17 @@ _HELP = """\
 
 # ─── 公共入口 ─────────────────────────────────────────────────────────────────
 
-async def run_repl(workspace: Path) -> None:
-    """启动交互式 REPL（优先使用 prompt_toolkit，不可用时退化为基础模式）。"""
+async def run_repl(
+    workspace: Path,
+    *,
+    pipelines_dir: "Path | None" = None,
+    no_autoload: bool = False,
+) -> None:
+    """启动交互式 REPL（优先使用 prompt_toolkit，不可用时退化为基础模式）。
+
+    pipelines_dir: autoload 扫描目录（None → ./pipelines）。
+    no_autoload:   True 时跳过 autoload。
+    """
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.completion import ThreadedCompleter
@@ -69,10 +78,25 @@ async def run_repl(workspace: Path) -> None:
         from pipeline_engine.repl_completion import PipelineReplCompleter
     except ImportError:
         console.print("[red]prompt_toolkit 未安装 — 退回基础输入模式。[/red]")
-        await _run_repl_basic(workspace)
+        await _run_repl_basic(workspace, pipelines_dir=pipelines_dir, no_autoload=no_autoload)
         return
 
     rm = RunManager(workspace)
+
+    # ── Autoload 启动时发现 pipelines ───────────────────────────────────────
+    if not no_autoload:
+        from pipeline_engine.cli import _autoload_pipelines
+        base_dir = pipelines_dir if pipelines_dir is not None else (workspace / "pipelines")
+        results = await _autoload_pipelines(rm, base_dir)
+        loaded_ok = [r for r in results if r["ok"]]
+        loaded_fail = [r for r in results if not r["ok"]]
+        if loaded_ok:
+            console.print(
+                f"[dim]Autoload: 已加载 {len(loaded_ok)} 个 pipeline"
+                + (f"，{len(loaded_fail)} 个失败" if loaded_fail else "")
+                + "[/dim]"
+            )
+
     session: PromptSession = PromptSession(
         history=InMemoryHistory(),
         auto_suggest=AutoSuggestFromHistory(),
@@ -105,9 +129,18 @@ async def run_repl(workspace: Path) -> None:
             console.print_exception(max_frames=5)
 
 
-async def _run_repl_basic(workspace: Path) -> None:
+async def _run_repl_basic(
+    workspace: Path,
+    *,
+    pipelines_dir: "Path | None" = None,
+    no_autoload: bool = False,
+) -> None:
     """无 prompt_toolkit 时的简化 REPL（无历史/补全）。"""
     rm = RunManager(workspace)
+    if not no_autoload:
+        from pipeline_engine.cli import _autoload_pipelines
+        base_dir = pipelines_dir if pipelines_dir is not None else (workspace / "pipelines")
+        await _autoload_pipelines(rm, base_dir)
     console.print("[bold green]Pipeline REPL（基础模式）[/bold green]")
     while True:
         try:
