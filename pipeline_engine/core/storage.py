@@ -220,6 +220,19 @@ def load_task_output(
     return read_json(path)
 
 
+# ─── output 路径解析 ───────────────────────────────────────────────────────────
+
+def resolve_output_path(workspace: str | Path, output: str | None) -> Path | None:
+    """将 YAML 中 output 字符串解析为绝对路径;None → None。
+
+    相对路径相对 workspace 解析;绝对路径原样使用。
+    """
+    if not output:
+        return None
+    p = Path(output)
+    return p if p.is_absolute() else Path(workspace) / p
+
+
 # ─── 注册表 ────────────────────────────────────────────────────────────────────
 
 def registry_path(workspace: str | Path) -> Path:

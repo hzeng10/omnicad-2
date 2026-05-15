@@ -126,6 +126,15 @@ the transparency invariant is enforced by `tests/unit/test_view_model.py`.
 
 `log_tail_size` convention: CLI callers pass `100` (default); REPL callers pass `200`.
 
+### Result output channels
+
+Optional `output: PATH` on `TaskSpec` / `StepSpec` / `PipelineMeta` materializes a copy of the
+JSON result at a user-defined path. Task-level is MIRROR (engine still writes internal
+`.pipeline_runs/.../output.json`); step/pipeline-level aggregate `_collect_step_outputs` shape on
+completion (`{task_id: ...}` / `{step_id: ...}`). Relative paths resolve against workspace via
+`storage.resolve_output_path`. Mirror/aggregate failures degrade to WARNING, not task/step/pipeline
+failure. A skip step with `output:` reads from that path instead of `manual_data/<step_id>/output.json`.
+
 ## Code Style
 
 - All function signatures must carry type annotations.

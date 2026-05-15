@@ -52,6 +52,10 @@
           "minimum": 1,
           "default": 8,
           "description": "进程级最大并发 task 数，各 step 可通过 max_parallelism 覆盖"
+        },
+        "output": {
+          "type": "string",
+          "description": "Pipeline 完成后聚合结果 JSON 的落盘路径（可选）；相对路径相对 workspace 解析"
         }
       }
     },
@@ -90,6 +94,10 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/TaskSpec" },
           "description": "Step 内的 task 列表（至少一个）"
+        },
+        "output": {
+          "type": "string",
+          "description": "Step 完成后聚合结果 JSON 的落盘路径（可选）；skip=true 时作为预置数据读取路径"
         }
       }
     },
@@ -135,6 +143,10 @@
           "additionalProperties": true,
           "default": {},
           "description": "静态输入字典，在任务执行前注入到 inputs 参数中"
+        },
+        "output": {
+          "type": "string",
+          "description": "Task 成功后镜像结果 JSON 的落盘路径（可选）；相对路径相对 workspace 解析"
         }
       }
     }

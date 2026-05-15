@@ -89,6 +89,22 @@ class AsyncScheduler:
             if self._run_logger:
                 status_word = "SUCCESS" if all_ok else "FAILED"
                 self._run_logger.info("pipeline finished — status=%s", status_word)
+            # 将 pipeline 聚合输出写入用户声明的路径（写失败不阻塞 pipeline 完成）
+            pipeline_output_path = storage.resolve_output_path(
+                self._workspace, self._spec.pipeline.output
+            )
+            if pipeline_output_path is not None and all_ok:
+                aggregated = {s.id: self._collect_step_outputs(s.id) for s in self._spec.steps}
+                try:
+                    pipeline_output_path.parent.mkdir(parents=True, exist_ok=True)
+                    storage.atomic_write_json(pipeline_output_path, aggregated)
+                    if self._run_logger:
+                        self._run_logger.info("pipeline output written: %s", pipeline_output_path)
+                except OSError as exc:
+                    if self._run_logger:
+                        self._run_logger.warning(
+                            "pipeline output write failed: %s (%s)", pipeline_output_path, exc
+                        )
             await self._sm.finish_pipeline(success=all_ok)
         except Exception:
             if self._run_logger:
@@ -201,20 +217,49 @@ class AsyncScheduler:
             ts.status in (Status.SUCCESS, Status.FIXED)
             for ts in step_state.tasks.values()
         )
+        # 将 step 聚合输出写入用户声明的路径（写失败不阻塞 step 完成）
+        step_output_path = storage.resolve_output_path(self._workspace, step.output)
+        if step_output_path is not None and success:
+            aggregated = self._collect_step_outputs(step.id)
+            try:
+                step_output_path.parent.mkdir(parents=True, exist_ok=True)
+                storage.atomic_write_json(step_output_path, aggregated)
+                if self._run_logger:
+                    self._run_logger.info(
+                        "step output written: %s → %s", step.id, step_output_path
+                    )
+            except OSError as exc:
+                if self._run_logger:
+                    self._run_logger.warning(
+                        "step output write failed: %s (%s)", step_output_path, exc
+                    )
         await self._sm.finish_step(step.id, success=success)
 
     async def _handle_skip(self, step: "StepSpec") -> None:
-        """处理 skip=true 的 step：校验 manual_data 存在后置为 SKIPPED。"""
-        try:
-            storage.load_manual_data(self._workspace, step.id)
-        except PipelineError:
-            raise PipelineError(
-                f"step '{step.id}' 标记为 skip=true，但 manual_data/{step.id}/output.json 不存在",
-                pipeline_id=self._pipeline_id,
-                step_id=step.id,
-            )
+        """处理 skip=true 的 step：校验预置数据存在后置为 SKIPPED。
+
+        若 step 配置了 output: PATH，从该路径读取预置数据；否则回退到
+        manual_data/<step_id>/output.json（向后兼容）。
+        """
+        if step.output:
+            path = storage.resolve_output_path(self._workspace, step.output)
+            if not path.exists():  # type: ignore[union-attr]
+                raise PipelineError(
+                    f"step '{step.id}' 标记为 skip=true，但 output: 路径 {path} 不存在",
+                    pipeline_id=self._pipeline_id,
+                    step_id=step.id,
+                )
+        else:
+            try:
+                storage.load_manual_data(self._workspace, step.id)
+            except PipelineError:
+                raise PipelineError(
+                    f"step '{step.id}' 标记为 skip=true，但 manual_data/{step.id}/output.json 不存在",
+                    pipeline_id=self._pipeline_id,
+                    step_id=step.id,
+                )
         if self._run_logger:
-            self._run_logger.info("step skipped (manual_data loaded): %s", step.id)
+            self._run_logger.info("step skipped: %s", step.id)
         await self._sm.skip_step(step.id)
 
     # ─── task 执行 ────────────────────────────────────────────────────────────
@@ -257,6 +302,21 @@ class AsyncScheduler:
                 validated_output = task_instance.validate_output(output)
                 # 先原子写盘，再更新内存状态（保证崩溃后可从文件恢复）
                 storage.atomic_write_json(output_path, validated_output)
+                # MIRROR：将结果额外复制到用户声明的路径（写失败不阻塞 task 完成）
+                mirror_dest = storage.resolve_output_path(self._workspace, task_spec.output)
+                if mirror_dest is not None:
+                    try:
+                        mirror_dest.parent.mkdir(parents=True, exist_ok=True)
+                        storage.atomic_write_json(mirror_dest, validated_output)
+                        if self._run_logger:
+                            self._run_logger.info(
+                                "task output mirrored: %s → %s", task_id, mirror_dest
+                            )
+                    except OSError as exc:
+                        if self._run_logger:
+                            self._run_logger.warning(
+                                "task output mirror failed: %s (%s)", mirror_dest, exc
+                            )
             await self._sm.finish_task(
                 step_id,
                 task_id,
@@ -295,12 +355,19 @@ class AsyncScheduler:
     def _collect_step_outputs(self, step_id: str) -> dict[str, Any]:
         """聚合上游 step 的输出。
 
-        - skip=true 的 step：直接返回 manual_data（不存在 task output 文件）。
+        - skip=true 且有 output: 的 step：从 output: 路径读取预置数据。
+        - skip=true 无 output: 的 step：从 manual_data/<step_id>/output.json 读取。
         - 普通 step：收集叶子 task 的 output.json，以 task_id 为键聚合。
         """
         dep_step_spec = self._get_step(step_id)
 
         if dep_step_spec.skip:
+            if dep_step_spec.output:
+                path = storage.resolve_output_path(self._workspace, dep_step_spec.output)
+                try:
+                    return storage.read_json(path)  # type: ignore[arg-type]
+                except (OSError, ValueError):
+                    return {}
             try:
                 return storage.load_manual_data(self._workspace, step_id)
             except PipelineError:

@@ -20,7 +20,9 @@
 
 ## 安装与环境准备
 
-> Ubuntu 22.04/24.04 的系统 Python 受保护，直接 `pip install` 会报 `externally-managed-environment`。请使用虚拟环境。
+> Ubuntu/macOS 的系统 Python 受保护，直接 `pip install` 会报 `externally-managed-environment`；Windows 同样推荐使用虚拟环境隔离依赖。
+
+### Linux / macOS
 
 ```bash
 cd ~/dev/omnicad-2
@@ -35,6 +37,36 @@ source .venv/bin/activate
 pip install -e .
 
 # 4. 验证安装
+pipeline_cli --help
+```
+
+### Windows (PowerShell)
+
+```powershell
+cd $HOME\dev\omnicad-2
+
+# 1. 创建虚拟环境（只需执行一次）
+py -3 -m venv .venv
+
+# 2. 激活虚拟环境（每次打开新终端都需要执行）
+.\.venv\Scripts\Activate.ps1
+
+# 3. 安装项目及依赖
+pip install -e .
+
+# 4. 验证安装
+pipeline_cli --help
+```
+
+> 若 PowerShell 提示脚本执行被禁止，以管理员权限执行 `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` 后重试。
+
+### Windows (cmd.exe)
+
+```cmd
+cd %USERPROFILE%\dev\omnicad-2
+py -3 -m venv .venv
+.venv\Scripts\activate.bat
+pip install -e .
 pipeline_cli --help
 ```
 

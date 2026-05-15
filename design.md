@@ -570,6 +570,39 @@ View 类的字段集合、字段顺序与对应 runtime model 完全一致，由
 
 ---
 
+### 6.13 结果输出通道（`output:` 字段）
+
+**背景**：task 的内部 output.json 路径包含随机 run_id，外部系统无法稳定消费；step/pipeline 层级原本没有持久化的聚合结果文件，依赖数据仅在内存中临时聚合后路由。`output:` 字段允许用户在 YAML 中显式声明三个层级的结果落盘路径。
+
+**字段定义**：`output: PATH`（字符串，可选，默认 `None`），在 `TaskSpec` / `StepSpec` / `PipelineMeta` 三处均支持。路径解析规则：相对路径相对 workspace 解析（`storage.resolve_output_path`）；绝对路径原样使用；不支持模板插值。
+
+**三层语义**：
+
+| 层级 | 触发时机 | 写入内容 | 错误处理 |
+|---|---|---|---|
+| Task | task `RUNNING → SUCCESS`，写完内部 output.json 之后 | 与内部 output.json 字节级一致（MIRROR） | OSError → WARNING，task 仍记 SUCCESS |
+| Step（普通） | step 完成且 `success=True` | `{task_id: <task_output>}`（叶子 task 聚合，同 `_collect_step_outputs`） | OSError → WARNING，step 仍记 SUCCESS |
+| Step（skip+output） | `_handle_skip` 校验阶段（读取，不写） | 作为预置 step output 读取路径，替代 `manual_data/<step_id>/output.json` | 路径不存在 → PipelineError |
+| Pipeline | `run()` 末尾 `all_ok=True` | `{step_id: <step_aggregated_dict>}` | OSError → WARNING，pipeline 仍记 SUCCESS |
+
+**MIRROR 语义**（task 级）：内部 `.pipeline_runs/<pipeline_id>/<run_id>/<step_id>/<task_id>/output.json` 是权威源，resume / dependency 解析 / fix / inspect 均不受影响。用户路径是额外的对外副本，不进入 `TaskState.output_path`（该字段仍指向内部路径）。
+
+**skip step 回退逻辑**：若 step 未设 `output:`，保持原行为（读 `manual_data/<step_id>/output.json`），零破坏回退。
+
+**调用位置**：
+
+| 位置 | 函数 | 新增逻辑 |
+|---|---|---|
+| `scheduler._dispatch_task` (~line 305) | task mirror 写入 | `resolve_output_path` + `atomic_write_json` |
+| `scheduler._run_step` (~line 218) | step aggregate 写入 | 复用 `_collect_step_outputs` |
+| `scheduler.run` (~line 84) | pipeline aggregate 写入 | 遍历所有 step 调 `_collect_step_outputs` |
+| `scheduler._handle_skip` (~line 206) | skip + output 路径校验 | 取代 `load_manual_data` 校验 |
+| `scheduler._collect_step_outputs` (~line 365) | skip + output 路径读取 | 优先 output 路径，回退 manual_data |
+
+与 §6.5（Storage）的 `resolve_output_path` / `atomic_write_json` 配合；不影响 §6.12（view-model）透明性，因为 `output:` 是 spec 层字段，不进入 runtime state。
+
+---
+
 ## 7. CLI / REPL 指令
 
 ### 7.1 全局参数

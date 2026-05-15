@@ -10,7 +10,7 @@
 ### 2.1 任务插件化系统 (Task Plugin System)
 *   **统一接口**: 所有任务必须继承 `BaseTask` 抽象基类。
 *   **动态加载**: 支持在 YAML 中通过类路径（如 `module.TaskClass`）指定执行器，引擎需在运行时动态实例化。
-*   **数据契约**: 任务间通过 `input.json` 和 `output.json` 传递数据，需保证相同类型任务的 Schema 一致性。
+*   **数据契约**: 任务间通过 `input.json` 和 `output.json` 传递数据，需保证相同类型任务的 Schema 一致性。Task 可通过 `output: PATH` 在 YAML 中声明结果 JSON 的对外落盘位置（可选，MIRROR 语义：内部路径不变，额外写一份副本）。
 *   **自动加载（默认）**: CLI 启动时（REPL 与子命令均适用）自动扫描 `./pipelines/*/pipeline.yaml`（一级深度）并注册，等价于逐一调用 `load` 命令。可通过 `--pipelines-dir DIR`（或 env `PIPELINE_AUTOLOAD_DIR`）改变目录，`--no-autoload`（或 env `PIPELINE_NO_AUTOLOAD`）禁用。单个 YAML 解析失败时跳过并写 WARNING 到 stderr，不阻断其余文件或子命令本身。
 
 ### 2.2 多层级执行控制 (Granular Execution)
@@ -18,7 +18,7 @@
 *   **instance_id 格式**: 每个运行实例的唯一标识格式为 `<pipeline_id>_yyyyMMdd-hhmmss_<4digit>`（UTC 时间，4 位随机数字），例：`cad_drawing_pipeline_20260513-093024_7392`。由 `start` 命令打印，`stop/resume/status/inspect/fix` 命令接受此格式作为参数。
 *   **多层级结构**:
     *   **Pipeline**: 顶层容器，包含多个步骤。
-    *   **Step (步骤)**: 线性执行序列。支持 `skip` 模式，跳过时需从 `./manual_data/` 加载预设输出。
+    *   **Step (步骤)**: 线性执行序列。支持 `skip` 模式，跳过时需从 `./manual_data/` 加载预设输出（若 step 配置了 `output: PATH`，则改为从该路径读取）。Step 完成后若配置 `output: PATH`，引擎将 `{task_id: output}` 聚合结果写入该路径。
     *   **Task (任务)**: Step 内的最小执行单元，支持复杂的 DAG 依赖关系。
 *   **四级运行模式**:
     1.  **端到端运行**: 执行整个 Pipeline 的所有步骤。
@@ -143,7 +143,7 @@
 3.  **线程/协程安全**: 确保 REPL 读取状态时，不会与后台写入状态产生竞态冲突。
 4.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。进程重启后，遗留在 RUNNING 状态的任务必须自动复位为 FAILED，以便 `resume` 重调度。
 5.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。
-6.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。
+6.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。若 step 配置了 `output: PATH`，则改为校验该路径存在；否则回退到 `manual_data/<step_id>/output.json`。
 7.  **只读恢复**: `status` / `inspect` / `log` / `list --instance` 等查询命令从磁盘恢复 run 状态时，**必须跳过** `demote_orphans_sync` 降级操作（即 `restore_writeback=False`）。该约束防止 CLI 子命令与 REPL 进程并发运行时相互污染 `state.json`。只有 `resume` / `fix` 命令需要降级并写回（`restore_writeback=True`）。
 8.  **视图与状态解耦**: CLI JSON 输出与 REPL 终端渲染必须通过统一的 view-model 层（`pipeline_engine.view_model`）从 runtime state 派生，不允许直接调用 `state.model_dump()` 或手工拼装展示字典作为对外接口。view-model 与 runtime state 在字段集合/顺序/语义上保持透明等价，以防止两套渲染长尾发散。
 

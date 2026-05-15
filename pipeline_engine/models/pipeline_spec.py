@@ -62,6 +62,7 @@ class TaskSpec(BaseModel):
     depends_on_steps: list[str] = []
     config: dict[str, Any] = {}
     inputs: dict[str, Any] = {}
+    output: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -94,6 +95,7 @@ class StepSpec(BaseModel):
     max_parallelism: int | None = None
     depends_on_steps: list[str] = []
     tasks: list[TaskSpec]
+    output: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -147,6 +149,7 @@ class PipelineMeta(BaseModel):
     type: str
     description: str | None = None
     max_parallelism: int = 8
+    output: str | None = None
 
     @field_validator("id")
     @classmethod
