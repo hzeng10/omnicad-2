@@ -28,6 +28,7 @@ import contextvars
 import io
 import logging
 import sys
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +82,28 @@ class _RunFilter(logging.Filter):
         return True
 
 
+# ─── FileHandler 子类：handleError 不写 wrapper ──────────────────────────────
+
+class _RunFileHandler(logging.FileHandler):
+    """FileHandler 子类：emit 失败时直接写 _original_stderr，不经 wrapper。
+
+    Python 默认 Handler.handleError 用 traceback.print_exc(file=sys.stderr) ——
+    若 sys.stderr 已被 _RunAwareStream 替换，会形成
+    emit 失败 → handleError → wrapper.write → _pe_logger.log → emit 失败 的死循环。
+    """
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        if not logging.raiseExceptions:
+            return
+        if _original_stderr is None:
+            return
+        try:
+            import traceback
+            traceback.print_exc(file=_original_stderr)
+        except Exception:
+            pass
+
+
 # ─── stdout/stderr 路由包装器 ────────────────────────────────────────────────
 
 class _RunAwareStream(io.TextIOBase):
@@ -90,26 +113,46 @@ class _RunAwareStream(io.TextIOBase):
         self._original = original
         self._level = level
         self._buffers: dict[str, str] = {}  # run_id → partial line buffer
+        # 可重入 guard（线程局部）：防止 _pe_logger.log() 内部经由其它 handler
+        # 再次写回本流，形成无限递归。
+        self._local = threading.local()
+
+    def _in_write(self) -> bool:
+        return getattr(self._local, "active", False)
 
     def write(self, text: str) -> int:  # type: ignore[override]
+        # 已经在本流调用栈内（嵌套写）：fall-through 到原始流，杜绝递归
+        if self._in_write():
+            return self._original.write(text)  # type: ignore[return-value]
         run_id = _run_id_var.get(None)
         if run_id and run_id in _active_loggers:
-            rl = _active_loggers[run_id]
-            buf = self._buffers.get(run_id, "") + text
-            while "\n" in buf:
-                line, buf = buf.split("\n", 1)
-                if line.strip():
-                    rl._pe_logger.log(self._level, "%s", line)
-            self._buffers[run_id] = buf
-            return len(text)
+            self._local.active = True
+            try:
+                rl = _active_loggers[run_id]
+                buf = self._buffers.get(run_id, "") + text
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    if line.strip():
+                        rl._pe_logger.log(self._level, "%s", line)
+                self._buffers[run_id] = buf
+                return len(text)
+            finally:
+                self._local.active = False
         return self._original.write(text)  # type: ignore[return-value]
 
     def flush(self) -> None:
-        for run_id, buf in list(self._buffers.items()):
-            if buf.strip() and run_id in _active_loggers:
-                _active_loggers[run_id]._pe_logger.log(self._level, "%s", buf)
-                self._buffers[run_id] = ""
-        self._original.flush()
+        if self._in_write():
+            self._original.flush()
+            return
+        self._local.active = True
+        try:
+            for run_id, buf in list(self._buffers.items()):
+                if buf.strip() and run_id in _active_loggers:
+                    _active_loggers[run_id]._pe_logger.log(self._level, "%s", buf)
+                    self._buffers[run_id] = ""
+            self._original.flush()
+        finally:
+            self._local.active = False
 
     @property
     def encoding(self) -> str:
@@ -145,7 +188,7 @@ class RunLogger:
     def __init__(self, run_id: str, log_path: Path) -> None:
         self._run_id = run_id
         self._log_path = log_path
-        self._handler: logging.FileHandler | None = None
+        self._handler: _RunFileHandler | None = None
         self._pe_logger = logging.getLogger("pipeline_engine")
 
     def attach(self) -> None:
@@ -159,7 +202,7 @@ class RunLogger:
                 return
 
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(str(self._log_path), mode="a", encoding="utf-8")
+        handler = _RunFileHandler(str(self._log_path), mode="a", encoding="utf-8")
         handler._run_id = self._run_id  # type: ignore[attr-defined]
         handler.addFilter(_RunFilter(self._run_id))
         handler.setFormatter(_RunFormatter())
@@ -167,6 +210,10 @@ class RunLogger:
         self._pe_logger.addHandler(handler)
         if self._pe_logger.level == logging.NOTSET or self._pe_logger.level > logging.DEBUG:
             self._pe_logger.setLevel(logging.DEBUG)
+        # 切断到 root 的 propagate：run.log 是 pipeline_engine 的唯一终端；
+        # propagate=True 会让 record 流入 root，若 root 有 StreamHandler 捕获了
+        # 被替换后的 sys.stderr，就会触发 wrapper → log → handler → wrapper 的递归。
+        self._pe_logger.propagate = False
         self._handler = handler
         _active_loggers[self._run_id] = self
 

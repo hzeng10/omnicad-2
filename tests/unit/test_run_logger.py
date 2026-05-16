@@ -261,5 +261,80 @@ def test_stream_adapter_buffers_partial_lines(tmp_path: Path) -> None:
     assert "part1 part2" in text
 
 
+# ─── recursion regression tests ──────────────────────────────────────────────
+
+def test_no_recursion_when_root_streamhandler_added_after_attach(tmp_path: Path) -> None:
+    """路径 A：外部 StreamHandler 捕获 wrapped sys.stderr 时 print() 不递归。
+
+    复现路径：wrapper.write → _pe_logger.log → propagate to root →
+    StreamHandler.emit(stream=wrapped sys.stderr) → wrapper.write → …
+    修复：re-entry guard 在第二次 wrapper.write 时立刻 fall-through 到 _original。
+    """
+    rl = _make_logger(tmp_path)
+    _run_id_var.set(rl._run_id)
+    rl.attach()
+    sh = logging.StreamHandler()  # default stream = current sys.stderr = wrapper
+    sh.setLevel(logging.DEBUG)
+    logging.root.addHandler(sh)
+    saved_level = logging.root.level
+    logging.root.setLevel(logging.DEBUG)
+    try:
+        print("trigger possible recursion")  # must return without RecursionError
+        sys.stdout.flush()
+    finally:
+        logging.root.removeHandler(sh)
+        logging.root.setLevel(saved_level)
+        rl.detach()
+
+
+def test_no_recursion_when_filehandler_io_fails(tmp_path: Path) -> None:
+    """路径 B：FileHandler 底层流关闭后 handleError 不经 wrapper 递归。
+
+    复现路径：wrapper.write → log → FileHandler.emit raises → handleError →
+    traceback.print_exc(file=sys.stderr=wrapper) → wrapper.write → …
+    修复：_RunFileHandler.handleError 写 _original_stderr；re-entry guard 兜底。
+    """
+    rl = _make_logger(tmp_path)
+    _run_id_var.set(rl._run_id)
+    rl.attach()
+    rl._handler.stream.close()  # force all subsequent emit() to raise ValueError
+    try:
+        print("forced io error")
+        sys.stdout.flush()
+    finally:
+        rl.detach()
+
+
+def test_pe_logger_propagate_disabled_after_attach(tmp_path: Path) -> None:
+    """attach 后 pe_logger.propagate 必须为 False，确保 run.log 是唯一终端。"""
+    rl = _make_logger(tmp_path)
+    _run_id_var.set(rl._run_id)
+    rl.attach()
+    try:
+        assert logging.getLogger("pipeline_engine").propagate is False
+    finally:
+        rl.detach()
+
+
+def test_reentry_guard_falls_through_to_original(tmp_path: Path) -> None:
+    """re-entry guard 激活时 write 直接落到 _original，不经 logger。"""
+    from pipeline_engine.core.run_logger import _RunAwareStream
+
+    rl = _make_logger(tmp_path)
+    _run_id_var.set(rl._run_id)
+    rl.attach()
+    try:
+        original = io.StringIO()
+        stream = _RunAwareStream(original, logging.INFO)
+        stream._local.active = True  # simulate re-entry state
+        stream.write("re-entered text\n")
+        # must go to original, not to run.log
+        assert "re-entered text" in original.getvalue()
+        rl._handler.flush()
+        assert "re-entered text" not in rl._log_path.read_text(encoding="utf-8")
+    finally:
+        rl.detach()
+
+
 # ─── import fix for contextvars ──────────────────────────────────────────────
 import contextvars  # noqa: E402  (needed for test_run_isolation)

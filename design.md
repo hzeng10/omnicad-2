@@ -486,6 +486,11 @@ class PipelineError(Exception):
 
 **`task_context(step_id, task_id)`**：同步 contextmanager，在 `_dispatch_task` 中以 `with` 包裹 task 执行段；进入时打 "task start"，正常退出打 "task done"，异常退出打 "task failed"（并 re-raise 供外层 `fail_task` 处理）。
 
+**防递归三层防线**（解决两条已复现的无限递归路径）：
+1. `_RunAwareStream.write()`/`flush()` 加 `threading.local` 可重入 guard；嵌套进入时一律 fall-through 到 `_original` 流，杜绝任意触发源的递归。
+2. `attach()` 设 `pipeline_engine.propagate = False`，阻止 record 冒泡到 root，杜绝 `pytest --log-cli` / `logging.basicConfig()` / 第三方库注册的 `StreamHandler` 把记录写回 wrapped stderr（路径 A）。
+3. `_RunFileHandler.handleError` 直接写 `_original_stderr`，不经 wrapper——防止 `FileHandler` I/O 故障时 emit → handleError → wrapper.write → emit 的死循环（路径 B）。
+
 ### 6.9 Autoload（`cli.py:_autoload_pipelines`）
 
 CLI 启动时（REPL 与所有一次性子命令）自动扫描 `<base_dir>/*/pipeline.yaml` 并注册。
