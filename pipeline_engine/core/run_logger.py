@@ -233,6 +233,11 @@ class RunLogger:
             pass
         self._handler = None
         _active_loggers.pop(self._run_id, None)
+        # L2: prune the partial-line buffer so _buffers doesn't grow unboundedly
+        # in long-running serve mode (one entry per run, never previously removed).
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, _RunAwareStream):
+                stream._buffers.pop(self._run_id, None)
 
     @contextmanager
     def task_context(self, step_id: str, task_id: str) -> Generator[None, None, None]:
