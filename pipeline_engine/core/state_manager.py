@@ -3,8 +3,13 @@
 设计原则
 --------
 - **线程安全**：所有读写操作均通过 ``asyncio.Lock`` 序列化，REPL 读取与后台任务写入不会发生竞态。
-- **原子持久化**：每次状态变更后立即通过 ``storage.persist_state`` 写盘（write-tmp + os.replace），
+- **原子持久化**：每次状态变更后通过 ``storage.persist_state`` 写盘（write-tmp + os.replace），
   进程崩溃后可从 ``state.json`` 完整恢复。
+- **锁外 I/O（H5）**：磁盘写入在 ``_lock`` 外进行（通过独立的 ``_persist_lock`` 序列化），
+  避免 50+ 并行 task 的状态切换被磁盘 latency 串行化。
+  ``_notify`` 仍在 ``_lock`` 内执行，保证订阅者看到的事件与内存状态一致。
+  ``asyncio.Lock`` 是 FIFO，因此两把锁的获取顺序完全一致，写入顺序与突变顺序相同，
+  不会出现旧快照覆盖新快照的 ABA 问题。
 - **隔离性**：每个 run 持有独立的 StateManager 实例，多 Pipeline 并行运行时互不干扰。
 - **状态机守卫**：``finish_task``、``fail_task``、``update_progress`` 内置非法迁移检查，
   防止竞态（如任务已被暂停后线程仍试图写入 SUCCESS）导致状态混乱。
@@ -26,7 +31,6 @@ import asyncio
 import logging
 import traceback
 from datetime import datetime, timezone
-from typing import Any
 
 _logger = logging.getLogger(__name__)
 
@@ -55,6 +59,10 @@ class StateManager:
     def __init__(self, run_state: PipelineRunState) -> None:
         self._state = run_state
         self._lock = asyncio.Lock()
+        # H5: separate lock serialises disk writes without blocking state mutations.
+        # Acquired immediately after releasing _lock (no await between them), so
+        # asyncio.Lock's FIFO guarantee preserves write order == mutation order.
+        self._persist_lock = asyncio.Lock()
         # SSE/事件订阅者列表；每个订阅者持有一个有界 Queue（容量 256）。
         # _notify 用 put_nowait — 不阻塞写者；队列满时丢弃（慢消费者无影响）。
         self._subscribers: list[asyncio.Queue[dict]] = []
@@ -77,8 +85,7 @@ class StateManager:
     def _notify(self, event: dict) -> None:
         """向所有订阅者广播事件（put_nowait；队列满时静默丢弃）。
 
-        必须在持有 _lock 的情况下调用（紧跟 _persist 之后），
-        以确保订阅者拿到的状态快照与持久化的状态一致。
+        必须在持有 _lock 的情况下调用，以确保订阅者拿到的事件与内存状态一致。
         使用快照迭代防止 unsubscribe 并发调用时触发 RuntimeError。
         """
         for q in list(self._subscribers):  # snapshot prevents RuntimeError on concurrent unsubscribe
@@ -122,7 +129,8 @@ class StateManager:
                 else:
                     tasks[tid] = TaskState(id=tid)
             self._state.steps[step_id] = StepState(id=step_id, tasks=tasks)
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     # ─── pipeline 级别变更 ────────────────────────────────────────────────────
 
@@ -131,16 +139,18 @@ class StateManager:
         async with self._lock:
             self._state.status = Status.RUNNING
             self._state.started_at = _now()
-            self._persist()
             self._notify({"type": "pipeline_update", "status": "running"})
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def finish_pipeline(self, success: bool) -> None:
         """将 pipeline 状态置为 SUCCESS 或 FAILED 并记录结束时间。"""
         async with self._lock:
             self._state.status = Status.SUCCESS if success else Status.FAILED
             self._state.finished_at = _now()
-            self._persist()
             self._notify({"type": "pipeline_update", "status": self._state.status.value})
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def reset_pipeline_status(self, status: Status) -> None:
         """重置 pipeline 级别的状态（供 RunManager.resume 调用）。
@@ -153,7 +163,8 @@ class StateManager:
             self._state.status = status
             if status in (Status.NEW, Status.RUNNING):
                 self._state.finished_at = None
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     # ─── step 级别变更 ────────────────────────────────────────────────────────
 
@@ -163,7 +174,8 @@ class StateManager:
             step = self._step(step_id)
             step.status = Status.RUNNING
             step.started_at = _now()
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def finish_step(self, step_id: str, success: bool) -> None:
         """将步骤状态置为 SUCCESS 或 FAILED 并记录结束时间。"""
@@ -171,7 +183,8 @@ class StateManager:
             step = self._step(step_id)
             step.status = Status.SUCCESS if success else Status.FAILED
             step.finished_at = _now()
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def skip_step(self, step_id: str) -> None:
         """将步骤状态置为 SKIPPED（skip=true 时由调度器调用）。"""
@@ -180,7 +193,8 @@ class StateManager:
             step.status = Status.SKIPPED
             step.started_at = _now()
             step.finished_at = _now()
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     # ─── task 级别变更 ────────────────────────────────────────────────────────
 
@@ -190,9 +204,10 @@ class StateManager:
             task = self._task(step_id, task_id)
             task.status = Status.RUNNING
             task.started_at = _now()
-            self._persist()
             self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
                           "status": "running", "progress": task.progress})
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def finish_task(
         self,
@@ -209,6 +224,7 @@ class StateManager:
         若任务已被 pause 或已处于终态（如 PAUSED / FIXED），则静默忽略，
         防止线程池任务完成时覆盖已暂停的状态（B2/B5 修复）。
         """
+        snap = None
         async with self._lock:
             task = self._task(step_id, task_id)
             if task.status != Status.RUNNING:
@@ -223,9 +239,10 @@ class StateManager:
                 task.output_path = output_path
             if log_path:
                 task.log_path = log_path
-            self._persist()
             self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
                           "status": "success", "progress": 100})
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def fail_task(
         self,
@@ -239,6 +256,7 @@ class StateManager:
         守卫：仅当任务处于 RUNNING 或 NEW 时才执行迁移，
         避免覆盖已处于终态（SUCCESS / FIXED / SKIPPED）或 PAUSED 的任务（B5 修复）。
         """
+        snap = None
         async with self._lock:
             task = self._task(step_id, task_id)
             if task.status not in (Status.RUNNING, Status.NEW):
@@ -249,19 +267,23 @@ class StateManager:
             task.error = error
             if exc is not None:
                 task.stack_trace = traceback.format_exc()
-            self._persist()
             self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
                           "status": "failed", "progress": task.progress, "error": error})
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def pause_task(self, step_id: str, task_id: str) -> None:
         """将 RUNNING 或 NEW 的任务置为 PAUSED（abort_event 触发时使用）。"""
+        snap = None
         async with self._lock:
             task = self._task(step_id, task_id)
             if task.status in (Status.RUNNING, Status.NEW):
                 task.status = Status.PAUSED
-                self._persist()
                 self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
                               "status": "paused", "progress": task.progress})
+                snap = self._state.model_copy(deep=True)
+        if snap is not None:
+            await self._async_persist(snap)
 
     async def update_progress(
         self, step_id: str, task_id: str, progress: int
@@ -270,14 +292,16 @@ class StateManager:
 
         守卫：仅当任务处于 RUNNING 时才更新，避免在任务暂停后仍收到线程的进度回调。
         """
+        snap = None
         async with self._lock:
             task = self._task(step_id, task_id)
             if task.status != Status.RUNNING:
                 return
             task.progress = max(0, min(100, progress))
-            self._persist()
             self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
                           "status": "running", "progress": task.progress})
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def recover_task(
         self,
@@ -292,7 +316,7 @@ class StateManager:
         FIXED 状态的任务在 resume 时会被 already_done 集合跳过，
         不会重新执行，但其 output.json 可供下游正常消费。
 
-        H7 修复：仅允许对 FAILED 任务执行 fix，防止对 RUNNING 任务调用导致状态错乱。
+        H7 修复：仅允许对非 RUNNING 任务执行 fix，防止对 RUNNING 任务调用导致状态错乱。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
@@ -309,7 +333,8 @@ class StateManager:
             task.finished_at = _now()
             task.error = None
             task.stack_trace = None
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def replace_task_input(self, step_id: str, task_id: str) -> None:
         """将任务重置为 NEW，供 fix --input 后调用（C1 修复：替代直接访问 _state）。
@@ -317,7 +342,7 @@ class StateManager:
         fix --input 操作将新的 input.json 写入磁盘后，需要把任务状态
         复位为 NEW 以便 resume 重新调度。
 
-        H7 修复：仅允许对 FAILED 任务执行 fix，防止对 RUNNING 任务调用导致状态错乱。
+        H7 修复：仅允许对非 RUNNING 任务执行 fix，防止对 RUNNING 任务调用导致状态错乱。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
@@ -331,7 +356,8 @@ class StateManager:
             task.status = Status.NEW
             task.error = None
             task.stack_trace = None
-            self._persist()
+            snap = self._state.model_copy(deep=True)
+        await self._async_persist(snap)
 
     async def reset_for_resume(
         self, step_id: str, task_id: str, include_paused: bool = False
@@ -343,6 +369,7 @@ class StateManager:
         bool
             若任务被复位则为 True，否则为 False。
         """
+        snap = None
         async with self._lock:
             task = self._task(step_id, task_id)
             eligible = {Status.FAILED}
@@ -355,15 +382,18 @@ class StateManager:
                 task.started_at = None
                 task.finished_at = None
                 task.progress = 0
-                self._persist()
-                return True
-            return False
+                snap = self._state.model_copy(deep=True)
+        if snap is not None:
+            await self._async_persist(snap)
+            return True
+        return False
 
     def demote_orphans_sync(self) -> None:
         """将所有残留的 RUNNING 状态复位为 FAILED（进程恢复时调用，无需加锁）。
 
         ``restore_runs_from_disk`` 在注册 RunContext 之前调用本方法，
         此时尚无并发访问，故不使用 asyncio.Lock 而直接操作内部状态。
+        此处保留同步 _persist() 调用，因为该方法在没有事件循环的上下文中运行。
 
         效果：进程崩溃/被杀时遗留的 RUNNING task / step / pipeline
         在下次 resume 时会被正确识别为 FAILED 并重新调度。
@@ -414,5 +444,15 @@ class StateManager:
             )
 
     def _persist(self) -> None:
-        """将当前内存状态原子写入磁盘（必须在持有 _lock 时调用，或在无并发的初始化阶段调用）。"""
+        """同步写盘（仅供 demote_orphans_sync 使用；所有 async 方法改用 _async_persist）。"""
         storage.persist_state(self._state)
+
+    async def _async_persist(self, snapshot: PipelineRunState) -> None:
+        """将快照异步写盘，在 _persist_lock 内序列化以防止乱序写入（H5 修复）。
+
+        通过 asyncio.to_thread 将 I/O 转到线程池，释放事件循环处理其他任务。
+        _persist_lock 在 _lock 释放后立即获取（中间无 await），asyncio.Lock 的
+        FIFO 保证写入顺序与突变顺序完全一致，不会出现旧快照覆盖新快照的情况。
+        """
+        async with self._persist_lock:
+            await asyncio.to_thread(storage.persist_state, snapshot)
