@@ -156,13 +156,15 @@ class StateManager:
         """重置 pipeline 级别的状态（供 RunManager.resume 调用）。
 
         避免 RunManager 直接操作 ``_state`` 私有属性。
-        H10 修复：reset 为 NEW/RUNNING 时同时清零 finished_at，避免 UI 显示
-        "状态=RUNNING 但 finished_at=过去时间" 的错配。
+        H10 修复：reset 为 NEW/RUNNING 时同时清零 finished_at 和 started_at，
+        避免 UI 显示"状态=RUNNING 但 finished_at/started_at=过去时间"的错配。
+        start_pipeline() 会在调度器启动时写入新的 started_at。
         """
         async with self._lock:
             self._state.status = status
             if status in (Status.NEW, Status.RUNNING):
                 self._state.finished_at = None
+                self._state.started_at = None
             snap = self._state.model_copy(deep=True)
         await self._async_persist(snap)
 

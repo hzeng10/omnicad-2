@@ -204,6 +204,47 @@ async def test_unsubscribe_idempotent(sm):
     sm.unsubscribe(q)  # second call must be a no-op, not ValueError
 
 
+# ── H10 regression tests ─────────────────────────────────────────────────────
+
+async def test_reset_pipeline_status_clears_timestamps(sm):
+    """H10: reset_pipeline_status(NEW) clears both finished_at and started_at."""
+    await sm.start_pipeline()          # sets started_at
+    await sm.finish_pipeline(success=False)  # sets finished_at
+
+    state = await sm.get_run_state()
+    assert state.finished_at is not None
+    assert state.started_at is not None
+
+    await sm.reset_pipeline_status(Status.NEW)
+
+    state = await sm.get_run_state()
+    assert state.status == Status.NEW
+    assert state.finished_at is None, "finished_at must be cleared on resume"
+    assert state.started_at is None, "started_at must be cleared on resume"
+
+
+async def test_reset_for_resume_clears_all_stale_task_fields(sm):
+    """H10: reset_for_resume clears error, stack_trace, timestamps and progress."""
+    await sm.init_step("s1", ["t1"])
+    await sm.start_task("s1", "t1")
+    await sm.fail_task("s1", "t1", error="boom")
+
+    ts = await sm.get_task_state("s1", "t1")
+    assert ts.error == "boom"
+    assert ts.finished_at is not None
+    assert ts.started_at is not None
+
+    await sm.reset_for_resume("s1", "t1")
+
+    ts = await sm.get_task_state("s1", "t1")
+    assert ts.status == Status.NEW
+    assert ts.error is None
+    assert ts.stack_trace is None
+    assert ts.finished_at is None
+    assert ts.started_at is None
+    assert ts.progress == 0
+
+
 async def test_notify_drops_full_queue(sm):
     """M1: _notify silently drops events for a full queue without raising."""
     from unittest.mock import patch
