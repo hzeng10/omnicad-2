@@ -294,7 +294,7 @@ class AsyncScheduler:
             else nullcontext()
         )
         try:
-            # 此处捕获所有异常（包括 PipelineError），统一写入 fail_task
+            # Exceptions are caught below; abort_event check takes priority over fail_task
             with _log_ctx:
                 task_instance = instantiate_task(task_spec.plugin, task_id, task_spec.config)
                 validated_inputs = task_instance.validate_input(inputs)
@@ -324,7 +324,19 @@ class AsyncScheduler:
                 output_path=str(output_path),
                 log_path=str(log_path) if log_path.exists() else None,
             )
+        except asyncio.CancelledError:
+            # CancelledError is BaseException; if abort was requested, record PAUSED not FAILED
+            if self._abort_event.is_set():
+                await self._sm.pause_task(step_id, task_id)
+                return
+            await self._sm.fail_task(step_id, task_id, error="CancelledError: task was cancelled unexpectedly")
+            raise
         except Exception as exc:
+            # H6: a plugin may catch CancelledError and re-raise as PipelineError;
+            # honour the abort signal so the task lands PAUSED, not FAILED.
+            if self._abort_event.is_set():
+                await self._sm.pause_task(step_id, task_id)
+                return
             error_msg = f"{type(exc).__name__}: {exc}"
             await self._sm.fail_task(step_id, task_id, error=error_msg, exc=exc)
             logger.error("Task %s/%s failed: %s", step_id, task_id, error_msg)

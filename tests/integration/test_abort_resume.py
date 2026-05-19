@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_engine.core.base_task import BaseTask
+from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.core.scheduler import AsyncScheduler
 from pipeline_engine.core.state_manager import StateManager
 from pipeline_engine.models.pipeline_spec import (
@@ -195,3 +196,51 @@ async def test_run_id_stable_across_resume(tmp_path):
     final_state = await sm.get_run_state()
     assert final_state.run_id == original_run_id
     assert final_state.status == Status.SUCCESS
+
+
+# ─── H6 regression ────────────────────────────────────────────────────────────
+
+class AbortRaisingTask(BaseTask):
+    """Simulates a plugin that catches CancelledError internally and re-raises as
+    PipelineError.  Sets the abort_event itself so it passes the pre-dispatch
+    guard and reaches _dispatch_task's exception handler."""
+    _abort_event: asyncio.Event | None = None
+
+    async def execute(self, inputs, progress):
+        if self._abort_event is not None:
+            self._abort_event.set()
+            raise PipelineError("plugin converted CancelledError to PipelineError")
+        return {"ok": True}
+
+
+async def test_abort_mid_task_pauses_not_fails(tmp_path):
+    """H6: task raising PipelineError while abort_event is set → PAUSED, not FAILED."""
+    abort_ev = asyncio.Event()
+    AbortRaisingTask._abort_event = abort_ev
+
+    spec = PipelineSpec(
+        version="1.0",
+        pipeline=PipelineMeta(id="h6_pipe", name="T", type="测试"),
+        steps=[
+            StepSpec(id="s1", tasks=[
+                TaskSpec(id="t1", plugin=f"{__name__}.AbortRaisingTask"),
+            ]),
+        ],
+    )
+
+    run_dir = tmp_path / ".pipeline_runs" / "h6_pipe" / "run1"
+    run_dir.mkdir(parents=True)
+    run_state = PipelineRunState(
+        pipeline_id="h6_pipe", run_id="run1", workspace=str(run_dir)
+    )
+    sm = StateManager(run_state)
+    sem = asyncio.Semaphore(4)
+    sched = AsyncScheduler(spec, sm, tmp_path, abort_ev, sem)
+
+    await sched.run()
+
+    state = await sm.get_run_state()
+    ts = state.steps["s1"].tasks["t1"]
+    assert ts.status == Status.PAUSED, (
+        f"expected PAUSED but got {ts.status} (error={ts.error!r})"
+    )
