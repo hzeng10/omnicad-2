@@ -129,7 +129,7 @@ def test_list_instance_empty(tmp_path):
 
 def test_list_instance_nonempty(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "ip")), "--workspace", str(tmp_path)])
-    _invoke(["start", "ip", "--workspace", str(tmp_path), "--wait"])
+    _invoke(["start", "ip", "--workspace", str(tmp_path)])
     result = _invoke(["list", "--instance", "--workspace", str(tmp_path)])
     p = _j(result)
     assert p["ok"] is True
@@ -141,7 +141,7 @@ def test_list_instance_nonempty(tmp_path):
 
 def test_start_wait_has_final_status(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "sp")), "--workspace", str(tmp_path)])
-    result = _invoke(["start", "sp", "--workspace", str(tmp_path), "--wait"])
+    result = _invoke(["start", "sp", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     p = _j(result)
     assert p["ok"] is True
@@ -163,7 +163,7 @@ def test_start_unknown_pipeline_error_envelope(tmp_path):
 
 def test_stop_success_envelope(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "stop_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "stop_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "stop_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke(["stop", run_id, "--workspace", str(tmp_path)])
     p = _j(result)
@@ -183,7 +183,7 @@ def test_stop_unknown_error_envelope(tmp_path):
 
 def test_resume_success_envelope(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "res_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "res_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "res_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke(["resume", run_id, "--workspace", str(tmp_path)])
     assert result.exit_code == 0
@@ -204,7 +204,7 @@ def test_resume_unknown_error_envelope(tmp_path):
 
 def test_fix_output_envelope(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "fix_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "fix_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "fix_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     out = tmp_path / "fix_out.json"
     out.write_text('{"result": "manual"}')
@@ -221,7 +221,7 @@ def test_fix_output_envelope(tmp_path):
 
 def test_fix_input_envelope(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "fix_in_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "fix_in_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "fix_in_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     inp = tmp_path / "fix_inp.json"
     inp.write_text("{}")
@@ -240,7 +240,7 @@ def test_fix_input_envelope(tmp_path):
 
 def test_status_envelope_contains_state(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "stat_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "stat_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "stat_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke(["status", run_id, "--workspace", str(tmp_path)])
     assert result.exit_code == 0
@@ -257,7 +257,7 @@ def test_status_envelope_contains_state(tmp_path):
 
 def test_inspect_no_step_returns_state(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "insp_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "insp_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "insp_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke(["inspect", run_id, "--workspace", str(tmp_path)])
     assert result.exit_code == 0
@@ -268,7 +268,7 @@ def test_inspect_no_step_returns_state(tmp_path):
 
 def test_inspect_step_returns_tasks(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "insp2_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "insp2_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "insp2_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke([
         "inspect", run_id, "--step", "s1", "--workspace", str(tmp_path),
@@ -282,7 +282,7 @@ def test_inspect_step_returns_tasks(tmp_path):
 
 def test_inspect_step_task_returns_task_detail(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "insp3_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "insp3_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "insp3_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke([
         "inspect", run_id, "--step", "s1", "--task", "t1",
@@ -302,7 +302,7 @@ def test_inspect_step_task_returns_task_detail(tmp_path):
 
 def test_log_no_file_returns_empty_lines(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "log_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "log_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "log_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     # Run has completed; run.log should exist from the run
     result = _invoke(["log", run_id, "--workspace", str(tmp_path)])
@@ -317,7 +317,7 @@ def test_log_no_file_returns_empty_lines(tmp_path):
 
 def test_log_tail_limits(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "logtail_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "logtail_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "logtail_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke(["log", run_id, "--tail", "2", "--workspace", str(tmp_path)])
     p = _j(result)
@@ -327,7 +327,7 @@ def test_log_tail_limits(tmp_path):
 
 def test_log_errors_only(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "logerr_j")), "--workspace", str(tmp_path)])
-    run_r = _invoke(["start", "logerr_j", "--workspace", str(tmp_path), "--wait"])
+    run_r = _invoke(["start", "logerr_j", "--workspace", str(tmp_path)])
     run_id = _j(run_r)["runs"][0]["run_id"]
     result = _invoke(["log", run_id, "--errors-only", "--workspace", str(tmp_path)])
     p = _j(result)

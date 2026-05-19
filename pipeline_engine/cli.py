@@ -217,13 +217,8 @@ def start_cmd(
     workspace: Optional[Path] = _workspace_option,
     step: Optional[str] = typer.Option(None, "--step", "-s", help="仅运行指定 step。"),
     task: Optional[str] = typer.Option(None, "--task", "-t", help="仅运行指定 task（需配合 --step）。"),
-    wait: bool = typer.Option(
-        True,
-        "--wait/--no-wait",
-        help="阻塞直到所有 run 完成（默认开启）。--no-wait 立即返回，但进程退出时 run 会被取消。",
-    ),
 ) -> None:
-    """启动一个或多个 pipeline run（后台并发执行）。"""
+    """启动一个或多个 pipeline run，阻塞直到完成。"""
     from pipeline_engine.cli_json import emit
 
     async def _run() -> None:
@@ -233,7 +228,7 @@ def start_cmd(
         except Exception:
             pass  # autoload 失败不阻断
 
-        result = await svc.cmd_start(pipeline_ids, step=step, task=task, wait=wait)
+        result = await svc.cmd_start(pipeline_ids, step=step, task=task, wait=True)
         any_error = any(not r["ok"] for r in result["runs"])
 
         if any_error:
@@ -245,15 +240,6 @@ def start_cmd(
             }
             typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
             raise typer.Exit(1)
-        elif not wait:
-            emit(
-                "start",
-                **result,
-                warning=(
-                    "runs will be cancelled when CLI exits; "
-                    "use REPL or --wait for persistent execution"
-                ),
-            )
         else:
             emit("start", **result)
 

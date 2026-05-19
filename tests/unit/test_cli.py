@@ -137,7 +137,7 @@ def test_list_empty_workspace(tmp_path):
 
 def test_run_starts_pipeline(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "run_pipe")), "--workspace", str(tmp_path)])
-    result = _invoke(["start", "run_pipe", "--workspace", str(tmp_path), "--wait"])
+    result = _invoke(["start", "run_pipe", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     payload = _j(result)
     assert payload["ok"] is True
@@ -155,7 +155,7 @@ def test_run_unknown_pipeline(tmp_path):
 
 def test_run_with_wait_shows_status(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "waiter_pipe")), "--workspace", str(tmp_path)])
-    result = _invoke(["start", "waiter_pipe", "--workspace", str(tmp_path), "--wait"])
+    result = _invoke(["start", "waiter_pipe", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     payload = _j(result)
     assert payload["ok"] is True
@@ -191,7 +191,7 @@ def test_stop_unknown_run(tmp_path):
 
 def test_stop_known_run(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "stop_pipe")), "--workspace", str(tmp_path)])
-    run_result = _invoke(["start", "stop_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_result = _invoke(["start", "stop_pipe", "--workspace", str(tmp_path)])
     run_id = _j(run_result)["runs"][0]["run_id"]
     result = _invoke(["stop", run_id, "--workspace", str(tmp_path)])
     assert result.exit_code == 0
@@ -211,7 +211,7 @@ def test_resume_unknown_run(tmp_path):
 
 def test_resume_completed_run(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "res_pipe")), "--workspace", str(tmp_path)])
-    run_result = _invoke(["start", "res_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_result = _invoke(["start", "res_pipe", "--workspace", str(tmp_path)])
     run_id = _j(run_result)["runs"][0]["run_id"]
     result = _invoke(["resume", run_id, "--workspace", str(tmp_path)])
     assert result.exit_code == 0
@@ -236,7 +236,7 @@ def test_fix_unknown_run(tmp_path):
 
 def test_fix_output_on_completed_task(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "fix_pipe")), "--workspace", str(tmp_path)])
-    run_result = _invoke(["start", "fix_pipe", "--workspace", str(tmp_path), "--wait"])
+    run_result = _invoke(["start", "fix_pipe", "--workspace", str(tmp_path)])
     run_id = _j(run_result)["runs"][0]["run_id"]
 
     out_file = tmp_path / "fixed.json"
@@ -257,7 +257,7 @@ def test_fix_output_on_completed_task(tmp_path):
 
 def test_start_renamed_from_run(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "start_pipe")), "--workspace", str(tmp_path)])
-    result = _invoke(["start", "start_pipe", "--workspace", str(tmp_path), "--wait"])
+    result = _invoke(["start", "start_pipe", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     payload = _j(result)
     assert payload["ok"] is True
@@ -283,7 +283,7 @@ def test_list_pipeline_shows_type(tmp_path):
 
 def test_list_instance_shows_status(tmp_path):
     _invoke(["load", str(_make_yaml(tmp_path, "inst_pipe")), "--workspace", str(tmp_path)])
-    _invoke(["start", "inst_pipe", "--workspace", str(tmp_path), "--wait"])
+    _invoke(["start", "inst_pipe", "--workspace", str(tmp_path)])
     result = _invoke(["list", "--instance", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     payload = _j(result)

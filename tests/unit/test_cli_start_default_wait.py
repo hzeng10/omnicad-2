@@ -1,7 +1,6 @@
-"""Tests for 'start' command default wait behavior.
+"""Tests for 'start' command wait behavior.
 
-'start' defaults to --wait (blocks until run completes).
-'start --no-wait' returns immediately with a warning field.
+'start' always blocks until run completes; --no-wait is not supported.
 """
 from __future__ import annotations
 
@@ -55,8 +54,8 @@ class QuickTask(BaseTask):
 
 # ─── tests ────────────────────────────────────────────────────────────────────
 
-def test_start_default_blocks_and_returns_final_status(tmp_path):
-    """Default 'start' (no --wait flag) should block and include final_status."""
+def test_start_blocks_and_returns_final_status(tmp_path):
+    """'start' should block and include final_status in each run entry."""
     yaml_p = _make_yaml(tmp_path, "sw_default")
     runner.invoke(app, [_NA, "load", str(yaml_p), "--workspace", str(tmp_path)])
 
@@ -65,42 +64,14 @@ def test_start_default_blocks_and_returns_final_status(tmp_path):
     p = _j(result)
     assert p["ok"] is True
     run = p["runs"][0]
-    assert "final_status" in run, "default start should wait and return final_status"
+    assert "final_status" in run, "start should wait and return final_status"
     assert run["final_status"] == "success"
 
 
-def test_start_explicit_wait_returns_final_status(tmp_path):
-    """Explicit --wait should also block and return final_status."""
-    yaml_p = _make_yaml(tmp_path, "sw_explicit")
+def test_start_no_wait_option_rejected(tmp_path):
+    """--no-wait is not a valid option; typer should reject it with a non-zero exit."""
+    yaml_p = _make_yaml(tmp_path, "sw_reject")
     runner.invoke(app, [_NA, "load", str(yaml_p), "--workspace", str(tmp_path)])
 
-    result = runner.invoke(app, [_NA, "start", "sw_explicit", "--wait", "--workspace", str(tmp_path)])
-    assert result.exit_code == 0
-    p = _j(result)
-    assert p["ok"] is True
-    assert "final_status" in p["runs"][0]
-
-
-def test_start_no_wait_returns_warning(tmp_path):
-    """--no-wait should return immediately with a 'warning' field."""
-    yaml_p = _make_yaml(tmp_path, "sw_nowait")
-    runner.invoke(app, [_NA, "load", str(yaml_p), "--workspace", str(tmp_path)])
-
-    result = runner.invoke(app, [_NA, "start", "sw_nowait", "--no-wait", "--workspace", str(tmp_path)])
-    assert result.exit_code == 0
-    p = _j(result)
-    assert p["ok"] is True
-    assert "warning" in p, "--no-wait response should contain a 'warning' field"
-    assert "cancelled" in p["warning"].lower() or "cancel" in p["warning"].lower()
-
-
-def test_start_no_wait_does_not_have_final_status(tmp_path):
-    """--no-wait entries should NOT contain final_status."""
-    yaml_p = _make_yaml(tmp_path, "sw_nowait2")
-    runner.invoke(app, [_NA, "load", str(yaml_p), "--workspace", str(tmp_path)])
-
-    result = runner.invoke(app, [_NA, "start", "sw_nowait2", "--no-wait", "--workspace", str(tmp_path)])
-    p = _j(result)
-    assert p["ok"] is True
-    run = p["runs"][0]
-    assert "final_status" not in run, "--no-wait run entry should not have final_status"
+    result = runner.invoke(app, [_NA, "start", "sw_reject", "--no-wait", "--workspace", str(tmp_path)])
+    assert result.exit_code != 0, "--no-wait should be rejected as an unknown option"

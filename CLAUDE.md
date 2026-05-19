@@ -45,8 +45,8 @@ Running `pipeline_cli` without a subcommand enters the REPL — Rich text render
 **New CLI subcommands must call `cli_json.emit()` / `cli_json.emit_error()` for stdout output.**
 Output is formatted with `indent=2` by default; `json.loads()` handles multi-line JSON fine.
 
-**`start` defaults to `--wait` (blocks until run completes).** Use `--no-wait` for fire-and-forget
-(the run is cancelled when the CLI process exits — not suitable for long jobs).
+**`start` blocks until all runs complete.** Background execution is only supported in serve mode
+(`pipeline_cli serve`), where `POST /runs` returns immediately and the server drives runs.
 
 **New subcommands that read run state**: call `_bootstrap(rm, ctx, restore_runs=True)` with the
 default `restore_writeback=False` (read-only — does not demote RUNNING→FAILED). Only `resume`
