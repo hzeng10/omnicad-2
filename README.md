@@ -448,6 +448,31 @@ class MyTask(BaseTask):
 
 ---
 
+## 第三方依赖
+
+### 运行时依赖
+
+| 软件包 | 版本 | 许可证 | 商业使用 |
+|---|---|---|---|
+| pydantic | 2.13.4 | MIT | ✓ |
+| networkx | 3.6.1 | BSD-3-Clause | ✓ |
+| PyYAML | 6.0.1 | MIT | ✓ |
+| rich | 15.0.0 | MIT | ✓ |
+| prompt_toolkit | 3.0.52 | BSD | ✓ |
+| typer | 0.25.1 | MIT | ✓ |
+
+### 开发 / 测试依赖（不随产品分发）
+
+| 软件包 | 版本 | 许可证 | 商业使用 |
+|---|---|---|---|
+| pytest | 9.0.3 | MIT | ✓ |
+| pytest-asyncio | 1.3.0 | Apache-2.0 | ✓ |
+| pytest-cov | 7.1.0 | MIT | ✓ |
+
+所有依赖均为宽松许可证（MIT / BSD / Apache-2.0），可在商业产品中使用，无 Copyleft 强制开源要求。主要义务：保留版权声明；Apache-2.0 额外要求标注修改内容，并附带专利授权。
+
+---
+
 ## 运行测试
 
 ```bash
