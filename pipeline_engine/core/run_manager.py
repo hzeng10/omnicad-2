@@ -43,6 +43,10 @@ def _new_run_id(pipeline_id: str) -> str:
     return f"{pipeline_id}_{ts}_{suffix}"
 
 
+# H1: maximum number of terminal runs kept in memory; oldest are evicted when exceeded.
+_MAX_RUNS = 200
+
+
 class RunManager:
     """进程级单例：管理所有已加载 pipeline 及活跃 run。
 
@@ -133,6 +137,7 @@ class RunManager:
                 run_logger=run_logger,
             )
             self._runs[run_id] = ctx
+            self._prune_terminal_runs()  # H1: keep _runs bounded
 
         if step_id and task_id:
             coro = ctx.scheduler.run_task(step_id, task_id)
@@ -147,9 +152,14 @@ class RunManager:
     # ─── 停止 ─────────────────────────────────────────────────────────────────
 
     async def stop(self, ref: str) -> None:
-        """触发有序中止：设置 abort_event，不再分发新 task。"""
-        ctx = self._resolve_run(ref)
-        ctx.abort_event.set()
+        """触发有序中止：设置 abort_event，不再分发新 task。
+
+        H4 修复：在 _lock 内读取并 set abort_event，与 resume() 的替换操作互斥，
+        防止 stop() 读到旧 abort_event 而 resume() 已换新的竞态。
+        """
+        async with self._lock:
+            ctx = self._resolve_run(ref)
+            ctx.abort_event.set()
 
     # ─── 恢复 ─────────────────────────────────────────────────────────────────
 
@@ -185,9 +195,12 @@ class RunManager:
         # C1：使用公共 API 重置 pipeline 状态，避免直接访问内部属性
         await sm.reset_pipeline_status(Status.NEW)
 
-        # 刷新 abort_event，确保本次 resume 可以被再次 stop
-        ctx.abort_event = asyncio.Event()
-        ctx.scheduler._abort_event = ctx.abort_event
+        # H4 修复：在 _lock 内原子替换 abort_event，与 stop() 的读取互斥，
+        # 防止 stop() 读到即将被替换的旧 event 导致 stop 失效。
+        new_event = asyncio.Event()
+        async with self._lock:
+            ctx.abort_event = new_event
+            ctx.scheduler._abort_event = new_event
 
         ctx.main_task = asyncio.create_task(
             ctx.scheduler.run(), name=f"run-{ctx.run_id}-resume"
@@ -368,6 +381,20 @@ class RunManager:
                 self._runs[run_id] = ctx
 
     # ─── 内部工具方法 ─────────────────────────────────────────────────────────
+
+    def _prune_terminal_runs(self) -> None:
+        """驱逐最旧的终态 run，将 _runs 总量限制在 _MAX_RUNS 以内。
+
+        H1 修复：防止 serve 模式长期运行时 _runs 无限增长导致 OOM。
+        仅驱逐 is_active()==False 的 run（RUNNING/PAUSED 不动）。
+        必须在持有 self._lock 时调用。
+        """
+        if len(self._runs) <= _MAX_RUNS:
+            return
+        terminal = [run_id for run_id, ctx in self._runs.items() if not ctx.is_active()]
+        excess = len(self._runs) - _MAX_RUNS
+        for run_id in terminal[:excess]:
+            del self._runs[run_id]
 
     def _get_spec(self, pipeline_id: str) -> PipelineSpec:
         """按 pipeline_id 查找已注册 spec，不存在则抛出 PipelineError。"""

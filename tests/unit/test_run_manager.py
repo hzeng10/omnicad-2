@@ -90,3 +90,26 @@ def test_new_run_id_collision_retry(tmp_path):
     result = asyncio.run(_run())
     assert result == unique_id
     assert call_count == 3  # first 2 collide, 3rd succeeds
+
+
+def test_prune_terminal_runs_evicts_oldest(tmp_path):
+    """H1: _prune_terminal_runs removes oldest terminal runs when _runs exceeds _MAX_RUNS."""
+    from unittest.mock import MagicMock, patch
+    from pipeline_engine.core.run_manager import RunManager, _MAX_RUNS
+
+    rm = RunManager(tmp_path)
+    # Populate _runs with (_MAX_RUNS + 5) fake terminal contexts
+    for i in range(_MAX_RUNS + 5):
+        ctx = MagicMock()
+        ctx.is_active.return_value = False  # all terminal
+        rm._runs[f"run_{i:04d}"] = ctx
+
+    assert len(rm._runs) == _MAX_RUNS + 5
+    rm._prune_terminal_runs()
+    # Should evict exactly 5 (oldest, by insertion order)
+    assert len(rm._runs) == _MAX_RUNS
+    # The 5 evicted IDs were run_0000..run_0004
+    for i in range(5):
+        assert f"run_{i:04d}" not in rm._runs
+    # run_0005 and beyond are retained
+    assert f"run_{5:04d}" in rm._runs

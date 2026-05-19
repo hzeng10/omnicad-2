@@ -223,3 +223,26 @@ async def test_fix_unknown_run(client):
     assert body["ok"] is False
 
 
+async def test_resume_terminal_run_blocked(client):
+    """C2 guard: POST :resume on a completed (SUCCESS) run returns 422."""
+    import asyncio
+    ac, svc, tmp = client
+    yaml_path = make_pipeline_yaml(tmp, "c2_pipe")
+    await ac.post("/pipelines", json={"paths": [str(yaml_path)]})
+    start_resp = await ac.post("/runs", json={"pipeline_ids": ["c2_pipe"]})
+    run_id = start_resp.json()["runs"][0]["run_id"]
+
+    # Wait for run to reach terminal state
+    for _ in range(30):
+        resp = await ac.get(f"/runs/{run_id}")
+        if resp.json()["state"]["status"] in ("success", "failed"):
+            break
+        await asyncio.sleep(0.05)
+
+    # Resuming a terminal run via REST must be rejected
+    resp = await ac.post(f"/runs/{run_id}:resume")
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["ok"] is False
+
+

@@ -27,7 +27,7 @@ from pipeline_engine.service import PipelineService
 
 router = APIRouter()
 
-_TERMINAL_STATUSES = frozenset({"success", "failed", "paused"})
+_TERMINAL_STATUSES = frozenset({"success", "failed", "paused", "fixed", "skipped"})
 
 
 @router.get(
@@ -50,9 +50,11 @@ async def run_events(run_id: str, request: Request):
         return StreamingResponse(_err(), media_type="text/event-stream")
 
     sm = ctx.state_manager
-    q = sm.subscribe()
 
     async def _stream():
+        # Subscribe inside the generator so the finally block always runs,
+        # preventing queue leak when the client disconnects before first yield (H2 fix).
+        q = sm.subscribe()
         try:
             # Check whether the run is already in a terminal state before streaming
             state = await sm.get_run_state()

@@ -23,9 +23,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import traceback
 from datetime import datetime, timezone
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 from pipeline_engine.core import storage
 from pipeline_engine.core.errors import PipelineError
@@ -76,12 +79,13 @@ class StateManager:
 
         必须在持有 _lock 的情况下调用（紧跟 _persist 之后），
         以确保订阅者拿到的状态快照与持久化的状态一致。
+        使用快照迭代防止 unsubscribe 并发调用时触发 RuntimeError。
         """
-        for q in self._subscribers:
+        for q in list(self._subscribers):  # snapshot prevents RuntimeError on concurrent unsubscribe
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:
-                pass
+                _logger.warning("event dropped for slow SSE subscriber (queue=%d)", id(q))
 
     # ─── 读 API ───────────────────────────────────────────────────────────────
 
@@ -142,9 +146,13 @@ class StateManager:
         """重置 pipeline 级别的状态（供 RunManager.resume 调用）。
 
         避免 RunManager 直接操作 ``_state`` 私有属性。
+        H10 修复：reset 为 NEW/RUNNING 时同时清零 finished_at，避免 UI 显示
+        "状态=RUNNING 但 finished_at=过去时间" 的错配。
         """
         async with self._lock:
             self._state.status = status
+            if status in (Status.NEW, Status.RUNNING):
+                self._state.finished_at = None
             self._persist()
 
     # ─── step 级别变更 ────────────────────────────────────────────────────────
@@ -283,9 +291,18 @@ class StateManager:
         ``fixed_by`` 记录补齐操作的审计信息（如 "fix@<timestamp>"）。
         FIXED 状态的任务在 resume 时会被 already_done 集合跳过，
         不会重新执行，但其 output.json 可供下游正常消费。
+
+        H7 修复：仅允许对 FAILED 任务执行 fix，防止对 RUNNING 任务调用导致状态错乱。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
+            if task.status == Status.RUNNING:
+                raise PipelineError(
+                    f"task '{task_id}' is RUNNING; stop the run before applying fix --output",
+                    pipeline_id=self._state.pipeline_id,
+                    step_id=step_id,
+                    task_id=task_id,
+                )
             task.status = Status.FIXED
             task.output_path = output_path
             task.fixed_by = fixed_by
@@ -299,9 +316,18 @@ class StateManager:
 
         fix --input 操作将新的 input.json 写入磁盘后，需要把任务状态
         复位为 NEW 以便 resume 重新调度。
+
+        H7 修复：仅允许对 FAILED 任务执行 fix，防止对 RUNNING 任务调用导致状态错乱。
         """
         async with self._lock:
             task = self._task(step_id, task_id)
+            if task.status == Status.RUNNING:
+                raise PipelineError(
+                    f"task '{task_id}' is RUNNING; stop the run before applying fix --input",
+                    pipeline_id=self._state.pipeline_id,
+                    step_id=step_id,
+                    task_id=task_id,
+                )
             task.status = Status.NEW
             task.error = None
             task.stack_trace = None

@@ -170,8 +170,51 @@ async def test_state_persisted_after_mutation(tmp_path):
     await sm.init_step("s1", ["t1"])
     await sm.start_pipeline()
 
-    import json
+    import json  # noqa: PLC0415
     state_file = run_dir / "state.json"
     assert state_file.exists()
     saved = json.loads(state_file.read_text())
     assert saved["status"] == "running"
+
+
+# ── new guard tests (audit fixes) ────────────────────────────────────────────
+
+async def test_recover_task_blocks_running(sm):
+    """H7: recover_task raises PipelineError if task is RUNNING."""
+    from pipeline_engine.core.errors import PipelineError
+    await sm.init_step("s1", ["t1"])
+    await sm.start_task("s1", "t1")  # status = RUNNING
+    with pytest.raises(PipelineError, match="RUNNING"):
+        await sm.recover_task("s1", "t1", output_path="/out.json", fixed_by="test")
+
+
+async def test_replace_task_input_blocks_running(sm):
+    """H7: replace_task_input raises PipelineError if task is RUNNING."""
+    from pipeline_engine.core.errors import PipelineError
+    await sm.init_step("s1", ["t1"])
+    await sm.start_task("s1", "t1")  # status = RUNNING
+    with pytest.raises(PipelineError, match="RUNNING"):
+        await sm.replace_task_input("s1", "t1")
+
+
+async def test_unsubscribe_idempotent(sm):
+    """C1: unsubscribe of an already-removed queue does not raise."""
+    q = sm.subscribe()
+    sm.unsubscribe(q)
+    sm.unsubscribe(q)  # second call must be a no-op, not ValueError
+
+
+async def test_notify_drops_full_queue(sm):
+    """M1: _notify silently drops events for a full queue without raising."""
+    from unittest.mock import patch
+    q = sm.subscribe()
+    # Fill the queue to capacity
+    for i in range(256):
+        q.put_nowait({"i": i})
+    warned = []
+    with patch("pipeline_engine.core.state_manager._logger") as mock_log:
+        mock_log.warning.side_effect = lambda *a, **kw: warned.append(a)
+        await sm.init_step("s1", ["t1"])
+        await sm.start_pipeline()  # triggers _notify; queue is full → drop + warn
+    assert warned, "expected at least one warning for dropped event"
+    assert any("dropped" in str(w) for w in warned)

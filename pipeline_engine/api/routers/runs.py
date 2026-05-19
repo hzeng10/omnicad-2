@@ -9,7 +9,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from pipeline_engine.api.schemas import FixRequest, ResumeRequest, StartRequest
+from pipeline_engine.core.errors import PipelineError
+from pipeline_engine.models.runtime_state import Status
 from pipeline_engine.service import PipelineService
+
+_TERMINAL_STATUSES = frozenset({Status.SUCCESS, Status.FIXED, Status.SKIPPED})
 
 router = APIRouter()
 
@@ -86,6 +90,15 @@ async def resume(
     svc: PipelineService = Depends(_svc),
 ):
     include_paused = body.include_paused if body else False
+    # C2 guard (REST-only): reject resume on terminal runs to prevent duplicate execution
+    # of side-effect tasks. The CLI allows resuming completed runs intentionally.
+    ctx = svc.rm._resolve_run(run_id)
+    state = await ctx.state_manager.get_run_state()
+    if state.status in _TERMINAL_STATUSES:
+        raise PipelineError(
+            f"run '{run_id}' is in terminal state '{state.status.value}'; cannot resume",
+            pipeline_id=ctx.pipeline_id,
+        )
     # Resume blocks until completion; that's the same as CLI --wait
     result = await svc.cmd_resume(run_id, include_paused=include_paused)
     return {"ok": True, "command": "resume", **result}
