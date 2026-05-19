@@ -314,3 +314,27 @@ def test_lint_invalid_max_parallelism(tmp_path):
     assert result.exit_code != 0
     payload = _j(result)
     assert payload["ok"] is False
+
+
+# ─── serve workspace-lock tests ───────────────────────────────────────────────
+
+def test_serve_rejects_second_process_on_same_workspace(tmp_path):
+    """L4: serve exits with code 1 when another process holds the workspace lock."""
+    import fcntl
+
+    lock_dir = tmp_path / ".pipeline_runs"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".serve.lock"
+
+    # Simulate an already-running serve process by pre-acquiring the lock
+    lock_fd = lock_path.open("w")
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = runner.invoke(
+            app, [_NA, "serve", "--workspace", str(tmp_path), "--port", "19999"]
+        )
+        assert result.exit_code == 1
+        assert ".serve.lock" in result.output or "占用" in result.output
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()

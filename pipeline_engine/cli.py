@@ -441,6 +441,26 @@ def serve(
     from pipeline_engine.service import PipelineService
 
     ws = _get_workspace(workspace, ctx)
+
+    # L4: prevent two serve processes from sharing the same workspace.
+    # fcntl.flock is atomic and auto-released when the fd is GC'd on exit.
+    import fcntl
+    import os
+    lock_dir = ws / ".pipeline_runs"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".serve.lock"
+    _lock_fd = lock_path.open("w")
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        typer.echo(
+            f"错误：workspace '{ws}' 已被另一个 serve 进程占用（{lock_path}）。",
+            err=True,
+        )
+        raise typer.Exit(1)
+    _lock_fd.write(str(os.getpid()))
+    _lock_fd.flush()
+
     rm = RunManager(ws)
     svc = PipelineService(
         rm,
