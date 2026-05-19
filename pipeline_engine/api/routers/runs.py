@@ -97,12 +97,11 @@ async def resume(
     include_paused = body.include_paused if body else False
     # C2 guard (REST-only): reject resume on terminal runs to prevent duplicate execution
     # of side-effect tasks. The CLI allows resuming completed runs intentionally.
-    ctx = svc.rm._resolve_run(run_id)
-    state = await ctx.state_manager.get_run_state()
+    state = await svc.rm.get_run_state(run_id)
     if state.status in _RESUME_BLOCKED_STATUSES:
         raise PipelineError(
             f"run '{run_id}' is in terminal state '{state.status.value}'; cannot resume",
-            pipeline_id=ctx.pipeline_id,
+            pipeline_id=state.pipeline_id,
         )
     # Resume blocks until completion; that's the same as CLI --wait
     result = await svc.cmd_resume(run_id, include_paused=include_paused)

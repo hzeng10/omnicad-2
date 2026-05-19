@@ -176,7 +176,7 @@ class RunManager:
         3. 刷新 abort_event（允许再次被 stop）。
         4. 创建新的 asyncio.Task 驱动调度器。
         """
-        ctx = self._resolve_run(ref)
+        ctx = await self._get_ctx(ref)
 
         # A3：防止重叠运行
         if ctx.is_active():
@@ -228,7 +228,7 @@ class RunManager:
         C1 修复：fix --input 改用 ``sm.replace_task_input()`` 公共 API，
         不再直接访问 ``sm._lock`` / ``sm._state``。
         """
-        ctx = self._resolve_run(ref)
+        ctx = await self._get_ctx(ref)
 
         # A3：活跃运行时禁止 fix，防止并发改写状态
         if ctx.is_active():
@@ -329,7 +329,7 @@ class RunManager:
 
     async def get_run_state(self, ref: str) -> PipelineRunState:
         """返回指定 run 的完整状态快照。"""
-        ctx = self._resolve_run(ref)
+        ctx = await self._get_ctx(ref)
         return await ctx.state_manager.get_run_state()
 
     # ─── 跨进程恢复 ───────────────────────────────────────────────────────────
@@ -414,7 +414,11 @@ class RunManager:
         return self._registry[pipeline_id]
 
     def _resolve_run(self, ref: str) -> RunContext:
-        """将 ref 解析为 RunContext：优先作为 run_id，其次作为 pipeline_id。"""
+        """将 ref 解析为 RunContext：优先作为 run_id，其次作为 pipeline_id。
+
+        M6: caller must hold self._lock before calling (stop() already does).
+        External callers without the lock must use _get_ctx() instead.
+        """
         if ref in self._runs:
             return self._runs[ref]
         # 按 pipeline_id 查找：必须唯一
@@ -428,6 +432,11 @@ class RunManager:
                 pipeline_id=ref,
             )
         raise PipelineError(f"未找到 run '{ref}'")
+
+    async def _get_ctx(self, ref: str) -> RunContext:
+        """Thread-safe wrapper around _resolve_run for callers that don't hold _lock."""
+        async with self._lock:
+            return self._resolve_run(ref)
 
     def _parse_task_locator(self, ctx: RunContext, locator: str) -> tuple[str, str]:
         """解析 'step_id/task_id' 格式，或在所有 step 中搜索 task_id。"""
