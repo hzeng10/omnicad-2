@@ -1,13 +1,31 @@
-"""Request body Pydantic models for the REST API.
+"""Request/response helpers for the REST API.
 
-Each model maps 1-to-1 to the arguments of the corresponding CLI command.
+Request models map 1-to-1 to the corresponding CLI command arguments.
+Response envelope helpers keep the ok/command wrapper DRY across routers.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+
+# ── response envelope helpers ─────────────────────────────────────────────────
+
+def envelope_ok(command: str, **payload: Any) -> dict[str, Any]:
+    """Return a successful JSON envelope: {ok: True, command: ..., ...payload}."""
+    return {"ok": True, "command": command, **payload}
+
+
+def envelope_err(command: str, message: str, error_type: str, **payload: Any) -> dict[str, Any]:
+    """Return an error JSON envelope: {ok: False, command: ..., error: {...}, ...payload}."""
+    return {
+        "ok": False,
+        "command": command,
+        **payload,
+        "error": {"message": message, "type": error_type},
+    }
 
 
 class LintRequest(BaseModel):

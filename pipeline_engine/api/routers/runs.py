@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from pipeline_engine.api.schemas import FixRequest, ResumeRequest, StartRequest
+from pipeline_engine.api.schemas import FixRequest, ResumeRequest, StartRequest, envelope_err, envelope_ok
 from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.models.runtime_state import Status, TERMINAL_PIPELINE_STATUSES
 from pipeline_engine.service import PipelineService
@@ -32,7 +32,7 @@ def _svc(request: Request) -> PipelineService:
 @router.get("/runs", summary="List run instances")
 async def list_runs(svc: PipelineService = Depends(_svc)):
     result = await svc.cmd_list_instances()
-    return {"ok": True, "command": "list", **result}
+    return envelope_ok("list", **result)
 
 
 # ── start ─────────────────────────────────────────────────────────────────────
@@ -45,14 +45,9 @@ async def start(body: StartRequest, svc: PipelineService = Depends(_svc)):
     if any_error:
         return JSONResponse(
             status_code=422,
-            content={
-                "ok": False,
-                "command": "start",
-                **result,
-                "error": {"message": "一个或多个 pipeline 启动失败", "type": "StartError"},
-            },
+            content=envelope_err("start", "一个或多个 pipeline 启动失败", "StartError", **result),
         )
-    return JSONResponse(status_code=202, content={"ok": True, "command": "start", **result})
+    return JSONResponse(status_code=202, content=envelope_ok("start", **result))
 
 
 # ── status / inspect ──────────────────────────────────────────────────────────
@@ -60,13 +55,13 @@ async def start(body: StartRequest, svc: PipelineService = Depends(_svc)):
 @router.get("/runs/{run_id}", summary="Get run status")
 async def get_run(run_id: str, svc: PipelineService = Depends(_svc)):
     result = await svc.cmd_status(run_id)
-    return {"ok": True, "command": "status", **result}
+    return envelope_ok("status", **result)
 
 
 @router.get("/runs/{run_id}/steps/{step_id}", summary="Inspect a step")
 async def get_step(run_id: str, step_id: str, svc: PipelineService = Depends(_svc)):
     result = await svc.cmd_inspect(run_id, step=step_id)
-    return {"ok": True, "command": "inspect", **result}
+    return envelope_ok("inspect", **result)
 
 
 @router.get(
@@ -75,7 +70,7 @@ async def get_step(run_id: str, step_id: str, svc: PipelineService = Depends(_sv
 )
 async def get_task(run_id: str, step_id: str, task_id: str, svc: PipelineService = Depends(_svc)):
     result = await svc.cmd_inspect(run_id, step=step_id, task=task_id)
-    return {"ok": True, "command": "inspect", **result}
+    return envelope_ok("inspect", **result)
 
 
 # ── stop ──────────────────────────────────────────────────────────────────────
@@ -83,7 +78,7 @@ async def get_task(run_id: str, step_id: str, task_id: str, svc: PipelineService
 @router.post("/runs/{run_id}:stop", summary="Stop a run")
 async def stop(run_id: str, svc: PipelineService = Depends(_svc)):
     result = await svc.cmd_stop(run_id)
-    return {"ok": True, "command": "stop", **result}
+    return envelope_ok("stop", **result)
 
 
 # ── resume ────────────────────────────────────────────────────────────────────
@@ -105,7 +100,7 @@ async def resume(
         )
     # Resume blocks until completion; that's the same as CLI --wait
     result = await svc.cmd_resume(run_id, include_paused=include_paused)
-    return {"ok": True, "command": "resume", **result}
+    return envelope_ok("resume", **result)
 
 
 # ── fix ───────────────────────────────────────────────────────────────────────
@@ -127,7 +122,7 @@ async def fix(
     result = await svc.cmd_fix(
         run_id, locator, output_path=output_path, input_path=input_path
     )
-    return {"ok": True, "command": "fix", **result}
+    return envelope_ok("fix", **result)
 
 
 # ── log ───────────────────────────────────────────────────────────────────────
@@ -144,4 +139,4 @@ async def get_log(
     result = await svc.cmd_log(
         run_id, tail=tail, offset=offset, all_lines=all, errors_only=errors_only
     )
-    return {"ok": True, "command": "log", **result}
+    return envelope_ok("log", **result)
