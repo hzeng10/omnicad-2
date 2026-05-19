@@ -426,3 +426,47 @@ def log_cmd(
             raise emit_error("log", e)
 
     asyncio.run(_log())
+
+
+# ─── serve ────────────────────────────────────────────────────────────────────
+
+@app.command()
+def serve(
+    ctx: typer.Context,
+    workspace: Optional[Path] = _workspace_option,
+    host: str = typer.Option("127.0.0.1", "--host", help="绑定地址（默认 127.0.0.1）。"),
+    port: int = typer.Option(8765, "--port", "-p", help="监听端口（默认 8765）。"),
+) -> None:
+    """以 HTTP REST API 方式启动 pipeline engine 服务（127.0.0.1 本机绑定，无鉴权）。
+
+    服务退出时所有进行中的 run 将被取消。安装 HTTP API 功能：pip install pipeline_engine[api]
+    """
+    try:
+        import uvicorn
+        from pipeline_engine.api import create_app
+    except ImportError:
+        typer.echo(
+            "错误：HTTP API 依赖未安装。请运行：pip install pipeline_engine[api]",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    from pipeline_engine.core.run_manager import RunManager
+    from pipeline_engine.service import PipelineService
+
+    ws = _get_workspace(workspace, ctx)
+    rm = RunManager(ws)
+    svc = PipelineService(
+        rm,
+        pipelines_dir=_get_pipelines_dir(ctx),
+        no_autoload=_is_no_autoload(ctx),
+    )
+
+    async def _serve() -> None:
+        await svc.bootstrap(restore_runs=True)
+        fastapi_app = create_app(svc)
+        config = uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    asyncio.run(_serve())
