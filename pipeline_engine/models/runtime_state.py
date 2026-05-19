@@ -50,6 +50,18 @@ class Status(str, Enum):
     FIXED = "fixed"          # 通过 fix --output 手动恢复
 
 
+# M2: single source of truth for pipeline terminal statuses.
+# A pipeline in any of these states will produce no further state-change events.
+# SSE streams use this to detect end-of-stream; it must cover every Status
+# value that is not NEW or RUNNING.
+TERMINAL_PIPELINE_STATUSES: frozenset[Status] = frozenset({
+    Status.SUCCESS,
+    Status.FAILED,
+    Status.PAUSED,
+    Status.FIXED,
+    Status.SKIPPED,
+})
+
 # 旧枚举值到新枚举值的映射（用于 state.json 向后兼容迁移）
 _LEGACY_STATUS_MAP = {
     "pending": "new",

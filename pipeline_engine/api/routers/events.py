@@ -23,11 +23,13 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from pipeline_engine.models.runtime_state import TERMINAL_PIPELINE_STATUSES
 from pipeline_engine.service import PipelineService
 
 router = APIRouter()
 
-_TERMINAL_STATUSES = frozenset({"success", "failed", "paused", "fixed", "skipped"})
+# String form of the canonical terminal-status set (used to match event dict values).
+_TERMINAL_STATUSES = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
 
 
 @router.get(
