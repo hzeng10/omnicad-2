@@ -311,7 +311,7 @@ stateDiagram-v2
 ```
 
 > **说明**：
-> - `recover_task`（等价于"置为 FIXED"）始终允许，可从 NEW / FAILED / PAUSED 进入 FIXED。
+> - `recover_task`（等价于"置为 FIXED"）允许从 FAILED / PAUSED / NEW 进入 FIXED；源状态为 RUNNING 时抛 `PipelineError`（防止并发改写活跃任务）。
 > - SUCCESS / FIXED / SKIPPED 为终态，`_assert_transition` 禁止再迁移。
 > - PAUSED 由调度器 abort_event 路径内部产生；`stop` 命令面只暴露实例级中止。
 
@@ -394,6 +394,14 @@ class RunManager:
     def get_run(self, ref: str) -> RunContext      # ref = run_id 或 pipeline_id（歧义时报错）
 ```
 
+**并发安全改进**：
+
+- **H1（内存上界）**：`_runs` 最多保留 `_MAX_RUNS = 200` 条 entry；新 run 入 dict 时调用 `_prune_terminal_runs()`，按插入顺序驱逐最旧的终态 run（`is_active()==False`），RUNNING/PAUSED run 不受影响。
+- **H3（snapshot 迭代）**：`list_instances()` 在 `async with self._lock:` 内先生成 `snap = list(self._runs.items())`，再出锁对快照进行 `await` 操作，避免迭代期间并发插入导致 `RuntimeError: dictionary changed size during iteration`。
+- **H4/H9（原子赋值）**：`start_run()` 和 `resume()` 均在 `async with self._lock:` 内同时赋值 `ctx.abort_event` 和 `ctx.main_task`，保证外部不可观察到"abort_event 已替换但 main_task 仍是旧 Task"的中间态；`stop()` 也在同一 `_lock` 内读取并 set `abort_event`。
+- **L1（TOCTOU 消除）**：`fix()` 的 `is_active()` 检查与 `_resolve_run()` 查找合并在同一 `async with self._lock:` 块内，消除并发 `resume()` 在两步之间启动 run 的竞态窗口。
+- **M6（_resolve_run 加锁）**：`_resolve_run()` 要求调用方持有 `self._lock`（如 `stop()` 已满足）；无锁调用方改用 `async _get_ctx(ref)` — 该辅助函数内部加锁后调用 `_resolve_run`，确保对 `_runs` 的读取与 mutation 互斥。
+
 ### 6.3 AsyncScheduler（`core/scheduler.py`）
 
 - NetworkX 构建 step 内与 step 间 DAG；
@@ -401,6 +409,7 @@ class RunManager:
 - 依赖就绪判定：上游 `output.json` 文件存在（status 无关）；
 - dispatch：`asyncio.create_task(_run_task(...))`，完成后原子写盘 → 更新状态 → 触发下游；
 - 监听 `abort_event`，触发后不再派发新任务，等 in-flight 任务自然结束。
+- **H6（abort 优先级）**：`_dispatch_task` 的异常处理对所有异常类型（`asyncio.CancelledError` 和 `Exception`）均优先检查 `abort_event.is_set()`；若已 set，无论插件抛出何种异常（包括插件内部把 `CancelledError` 转换为 `PipelineError` 的情况），一律将任务置为 `PAUSED` 而非 `FAILED`，保证 `stop + resume` 语义一致。
 
 ### 6.4 StateManager（`core/state_manager.py`）
 
@@ -415,7 +424,7 @@ class RunManager:
 | `finish_task` | RUNNING | 静默丢弃（task 已 PAUSED/FIXED/SUCCESS） |
 | `fail_task` | RUNNING、NEW | 静默丢弃（终态或 PAUSED 任务不可被改写） |
 | `update_progress` | RUNNING | 静默丢弃（任务已停止/暂停时进度无意义） |
-| `recover_task` | 任意 | 始终允许（fix 可覆盖 FAILED/PAUSED/NEW），置为 FIXED |
+| `recover_task` | FAILED、PAUSED、NEW | RUNNING 时抛 `PipelineError`（H7：防止并发改写正在运行的任务）；置为 FIXED |
 | `reset_for_resume` | FAILED（或 +PAUSED） | 仅允许声明的状态，其余无变化，目标状态 NEW |
 
 > 注：`recover_task` 历史名沿用，等价于"将任务置为 FIXED"。
@@ -424,6 +433,33 @@ class RunManager:
 
 `demote_orphans_sync()` 同步方法（无锁，调用时 RunContext 尚未注册故无并发）：  
 在 `restore_runs_from_disk` 加载旧 `state.json` 后立即调用，将残留的 RUNNING task / step / pipeline 全部置为 FAILED（`error="interrupted: process exited before completion"`），并原子写盘。这确保进程崩溃后的 `resume` 能正确重调度被中断的任务。
+
+**I/O 解耦（H5）**：
+
+所有状态变更在 `async with self._lock:` 内完成内存 mutate 后，出锁再通过 `_async_persist(snapshot)` 执行磁盘写入。`_async_persist` 持有独立的 `_persist_lock`（FIFO 顺序，确保写入顺序与 mutation 顺序一致），并通过 `asyncio.to_thread` 将同步 I/O 卸载到线程池，避免磁盘延迟阻塞事件循环。
+
+**新增状态迁移守卫（M3）**：
+
+| 方法 | 要求的 from 状态 | 其他状态时的行为 |
+|---|---|---|
+| `start_pipeline` | NEW | 抛 `PipelineError`（防止 SUCCESS→RUNNING 非法迁移） |
+| `start_step` | NEW | 抛 `PipelineError`（同上） |
+| `recover_task` | FAILED、PAUSED、NEW | RUNNING 时抛 `PipelineError`（防止并发 fix 改写活跃任务） |
+
+**Resume 字段清零（H10）**：
+
+`reset_pipeline_status(NEW)` 同时清除 `started_at` 与 `finished_at`（防止 UI 显示"状态=RUNNING、finished_at=过去时间"的矛盾状态）。`reset_for_resume` 同样清除 task 的 `error`、`stack_trace`、`started_at`、`finished_at`、`progress`。
+
+**终态常量（M2）**：
+
+```python
+TERMINAL_PIPELINE_STATUSES: frozenset[Status] = frozenset({
+    Status.SUCCESS, Status.FAILED, Status.PAUSED,
+    Status.FIXED, Status.SKIPPED,
+})
+```
+
+定义于 `models/runtime_state.py`，作为唯一事实来源（single source of truth）。SSE 端的 `_TERMINAL_STATUSES`（字符串集合）和 REST resume 端的 `_RESUME_BLOCKED_STATUSES` 均从此常量派生，不再各自硬编码。
 
 ### 6.5 Storage（`core/storage.py`）
 
@@ -483,6 +519,8 @@ class PipelineError(Exception):
 **多 run 隔离**：两个模块级 `contextvars.ContextVar` — `_run_id_var`（run 粒度）、`_task_ctx_var`（task 粒度）。asyncio Task 的 copy-on-write 语义确保并发 run 之间不共享 ContextVar 值。
 
 **生命周期**：`scheduler.run()` 入口调用 `attach()`（设 contextvar + 挂 FileHandler + 初始化 stdout wrapper），`finally` 块调用 `detach()`（移除 handler + 关闭 fd）。resume 走相同路径，FileHandler 以 `mode="a"` 追加，日志连续。
+
+**`_buffers` 清理（L2）**：`detach()` 在移除 FileHandler 后，从 `sys.stdout` 和 `sys.stderr` 的 `_RunAwareStream._buffers` dict 中 `pop` 当前 `run_id` 的条目，防止 serve 模式下长期运行时每个 run 残留一个 buffer entry 造成无界增长。
 
 **`task_context(step_id, task_id)`**：同步 contextmanager，在 `_dispatch_task` 中以 `with` 包裹 task 执行段；进入时打 "task start"，正常退出打 "task done"，异常退出打 "task failed"（并 re-raise 供外层 `fail_task` 处理）。
 
@@ -608,6 +646,38 @@ View 类的字段集合、字段顺序与对应 runtime model 完全一致，由
 
 ---
 
+### 6.14 HTTP REST API（`pipeline_engine/api/`）
+
+FastAPI 应用由 `pipeline_engine/api/app.py` 的 `create_app(svc)` 工厂创建，挂载两个路由组：
+
+| 路由模块 | 前缀 | 内容 |
+|---|---|---|
+| `routers/pipelines.py` | — | `POST /lint`、`POST /pipelines`（load）、`GET /pipelines`（list） |
+| `routers/runs.py` | — | `POST /runs`（start 异步）、`GET /runs`、`GET /runs/{id}`（status）、`:stop`、`:resume`、`/tasks/{step}/{task}:fix`、`/log`、`/steps/{step}` |
+| `routers/events.py` | — | `GET /runs/{id}/events`（SSE 流） |
+
+**响应信封**：所有端点通过 `schemas.envelope_ok(command, **payload)` / `schemas.envelope_err(command, message, type, **payload)` 构造响应，保证与 CLI JSON 子命令的 `{ok, command, ...}` 格式一致（L3）。
+
+**SSE 端点（M4）**：`run_events` handler 在 `try/finally` 内 `subscribe/unsubscribe`（H2），确保客户端断开时队列不泄漏。主循环以 `asyncio.wait_for(q.get(), timeout=25.0)` 驱动，超时发心跳 `: heartbeat\n\n`；每次迭代开头检查 `await request.is_disconnected()` 快速退出。SSE 终态集合从 `TERMINAL_PIPELINE_STATUSES` 派生（M2）。
+
+**C2 守卫**：REST `:resume` 端点在调用 `cmd_resume` 前检查 run 状态；若处于 `_RESUME_BLOCKED_STATUSES`（SUCCESS / FIXED / SKIPPED）则抛 `PipelineError(422)`，防止重复执行有副作用的任务。FAILED / PAUSED 可正常 resume。
+
+**serve 工作区互斥（L4）**：`pipeline_cli serve` 启动时在 `.pipeline_runs/.serve.lock` 上调用 `fcntl.flock(LOCK_EX | LOCK_NB)` 获取排他锁；同一 workspace 的第二个 serve 进程立即以 exit code 1 退出并打印错误，进程结束后锁自动释放。
+
+**目录结构**：
+```
+pipeline_engine/api/
+├── __init__.py          # create_app 工厂
+├── app.py               # FastAPI 应用组装 + lifespan
+├── schemas.py           # 请求 Pydantic 模型 + envelope_ok/envelope_err
+└── routers/
+    ├── pipelines.py
+    ├── runs.py
+    └── events.py
+```
+
+---
+
 ## 7. CLI / REPL 指令
 
 ### 7.1 全局参数
@@ -632,7 +702,7 @@ pipeline_cli load <path> [<path>...]
 pipeline_cli lint <path>
 pipeline_cli list [--pipeline]                       # 列已注册 pipeline
 pipeline_cli list --instance                         # 列运行实例
-pipeline_cli start <pipeline_id> [--step S] [--task T] [--no-wait]
+pipeline_cli start <pipeline_id> [--step S] [--task T]
 pipeline_cli stop <instance_id>
 pipeline_cli resume <instance_id> [--include-paused]
 pipeline_cli status <instance_id>
@@ -641,7 +711,7 @@ pipeline_cli fix <instance_id> --task T [--output PATH] [--input PATH]
 pipeline_cli log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]
 ```
 
-`start` 默认阻塞等待 run 完成并附 `final_status`（`--wait` 行为为默认）；`--no-wait` 立即返回但 run 会随进程退出而取消（JSON 响应含 `warning` 字段提示）。
+`start` 始终阻塞等待所有 run 完成（H8：`--no-wait` 已移除；在单进程 CLI 中 event loop 退出会立即取消后台 Task，`--no-wait` 语义从根本上无法实现）。后台执行仅在 `serve` 模式下支持，`POST /runs` 立即返回 202 并由服务端驱动运行。
 
 > **start 与 stop 的对称性**：`start` 支持 `--step/--task` 细粒度启动；`stop` 只接受 instance_id，中止整个 run。task 级 PAUSED 状态由调度器 abort_event 路径内部生产，不作为用户接口。
 

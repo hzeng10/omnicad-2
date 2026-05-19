@@ -61,7 +61,7 @@
 | `load <path>` | 系统 | 加载并保存一个 Pipeline 配置文件。 |
 | `list [--pipeline]` | 系统 | 列出已注册的 pipeline（pipeline_id / type / name）。默认行为。 |
 | `list --instance` | 系统 | 列出运行实例（pipeline_id / instance_id / status）。 |
-| `start <id> [--step S] [--task T] [--no-wait]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动；默认阻塞到完成（`--no-wait` 立即返回，但进程退出时 run 会被取消）。 |
+| `start <id> [--step S] [--task T]` | Pipeline/Step/Task | 启动执行。`--step`/`--task` 支持细粒度启动；始终阻塞到完成。 |
 | `stop <instance_id>` | Pipeline 实例 | 中止指定的 pipeline 运行实例（整个 run）。 |
 | `resume <instance_id>` | Pipeline 实例 | 恢复被中止或失败的 pipeline 实例。 |
 | `status <instance_id>` | Pipeline 实例 | 查看指定 pipeline 实例的整体进度和结果。 |
@@ -107,7 +107,7 @@
 | `lint` | `path, pipeline_id, valid` |
 | `list --pipeline` | `scope: "pipeline", pipelines: [{pipeline_id, type, name}]` |
 | `list --instance` | `scope: "instance", instances: [{pipeline_id, instance_id, status}]` |
-| `start` | `runs: [{pipeline_id, run_id, ok, final_status?}]`（`--wait` 时含 `final_status`） |
+| `start` | `runs: [{pipeline_id, run_id, ok, final_status}]` |
 | `stop` | `stopped: instance_id` |
 | `resume` | `resumed: run_id, final_status` |
 | `status` | `state: PipelineRunState`（含完整 steps/tasks 树，datetime 为 ISO 字符串） |
@@ -120,6 +120,34 @@
 *   **终端风格**: 采用文本行交互，支持命令补全与历史记录。
 *   **Tab 补全与联想**: REPL 支持 Tab 键补全及边输入边联想（complete_while_typing）。补全范围覆盖：命令名、pipeline_id（已 `load` 的）、instance_id（已启动的实例，含 `pipeline=<pid> | status=<status>` 旁注）、`--step`/`--task` 参数值（从 PipelineSpec 动态读取）、以及 `load` / `fix --output` / `fix --input` 的文件路径。
 *   **stop 范围**: `stop` 始终中止整个实例；task 级 Paused 状态仅由调度器内部产生（abort_event 处理路径），不作为用户接口暴露。
+
+### 3.4 HTTP REST API（serve 模式）
+
+`pipeline_cli serve [--host HOST] [--port PORT] [--workspace PATH]` 启动 FastAPI HTTP 服务器（默认 127.0.0.1:8765，无鉴权），提供与 CLI 子命令语义一致的 REST 接口。
+
+**工作区互斥锁**：`serve` 启动时在 `.pipeline_runs/.serve.lock` 上获取 `fcntl` 排他锁；同一 workspace 的第二个 serve 进程立即以 exit code 1 退出。
+
+**核心端点**：
+
+| 方法 | 路径 | 对应 CLI |
+| :--- | :--- | :--- |
+| `POST` | `/runs` | `start`（异步，立即返回 202） |
+| `GET`  | `/runs` | `list --instance` |
+| `GET`  | `/runs/{run_id}` | `status` |
+| `POST` | `/runs/{run_id}:stop` | `stop` |
+| `POST` | `/runs/{run_id}:resume` | `resume` |
+| `GET`  | `/runs/{run_id}/events` | SSE 实时事件流 |
+| `POST` | `/runs/{run_id}/tasks/{step_id}/{task_id}:fix` | `fix` |
+| `GET`  | `/runs/{run_id}/log` | `log` |
+| `POST` | `/lint` | `lint` |
+| `POST` | `/pipelines` | `load` |
+| `GET`  | `/pipelines` | `list --pipeline` |
+
+**SSE 事件流**（`GET /runs/{run_id}/events`）：订阅状态变更事件，每 25 秒发送一次心跳保活（`: heartbeat`），检测到客户端断开后停止推送。pipeline 到达终态时推送 `event: terminal` 后关闭流。
+
+**resume 守卫（C2）**：REST 的 `:resume` 拒绝对已处于 `SUCCESS` / `FIXED` / `SKIPPED` 终态的 run 发起 resume，防止重复执行有副作用的任务。CLI `resume` 子命令不受此限制（允许重新运行已完成的 run）。
+
+**响应信封**：所有端点返回与 CLI JSON 子命令一致的 `{"ok": bool, "command": "...", ...payload}` 信封格式，由 `envelope_ok()` / `envelope_err()` 统一构建（定义在 `pipeline_engine/api/schemas.py`）。
 
 ---
 
@@ -140,12 +168,13 @@
 
 1.  **解耦**: 执行引擎不应感知具体的业务逻辑，仅负责任务的调度和数据传递。
 2.  **状态机模型**: 必须为 Pipeline、Step、Task 定义严谨的状态机（`New`, `Running`, `Paused`, `Success`, `Failed`, `Skipped`, `Fixed`）。状态迁移规则：仅允许合法的前置状态（如 `finish_task` 仅从 RUNNING 迁移，其余状态静默忽略），防止并发竞争导致的非法覆盖。进程重启后，遗留 RUNNING 任务自动复位为 FAILED；`resume` 重新调度 FAILED / PAUSED 任务。
-3.  **线程/协程安全**: 确保 REPL 读取状态时，不会与后台写入状态产生竞态冲突。
-4.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。进程重启后，遗留在 RUNNING 状态的任务必须自动复位为 FAILED，以便 `resume` 重调度。
-5.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。
-6.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。若 step 配置了 `output: PATH`，则改为校验该路径存在；否则回退到 `manual_data/<step_id>/output.json`。
-7.  **只读恢复**: `status` / `inspect` / `log` / `list --instance` 等查询命令从磁盘恢复 run 状态时，**必须跳过** `demote_orphans_sync` 降级操作（即 `restore_writeback=False`）。该约束防止 CLI 子命令与 REPL 进程并发运行时相互污染 `state.json`。只有 `resume` / `fix` 命令需要降级并写回（`restore_writeback=True`）。
-8.  **视图与状态解耦**: CLI JSON 输出与 REPL 终端渲染必须通过统一的 view-model 层（`pipeline_engine.view_model`）从 runtime state 派生，不允许直接调用 `state.model_dump()` 或手工拼装展示字典作为对外接口。view-model 与 runtime state 在字段集合/顺序/语义上保持透明等价，以防止两套渲染长尾发散。
+3.  **状态机守卫强化**：`start_pipeline()` / `start_step()` 仅允许从 `NEW` 状态发起（非 NEW 状态时抛 `PipelineError`），防止 SUCCESS → RUNNING 非法迁移。`recover_task`（fix 流程）仅允许从 `FAILED` / `PAUSED` / `NEW` 发起，若任务处于 `RUNNING` 则立即抛 `PipelineError`，防止并发改写。
+4.  **线程/协程安全**: 确保 REPL 读取状态时，不会与后台写入状态产生竞态冲突。
+5.  **原子化存储**: 每个 Task 完成后，其结果必须立即落盘，确保在系统崩溃后可从该点恢复。进程重启后，遗留在 RUNNING 状态的任务必须自动复位为 FAILED，以便 `resume` 重调度。
+6.  **环境隔离**: 任务执行过程中的异常不应导致整个 REPL 进程崩溃。
+7.  **容错性**: 当 Step 被跳过时，引擎必须强制检查前置依赖数据是否已通过手动方式补全。若 step 配置了 `output: PATH`，则改为校验该路径存在；否则回退到 `manual_data/<step_id>/output.json`。
+8.  **只读恢复**: `status` / `inspect` / `log` / `list --instance` 等查询命令从磁盘恢复 run 状态时，**必须跳过** `demote_orphans_sync` 降级操作（即 `restore_writeback=False`）。该约束防止 CLI 子命令与 REPL 进程并发运行时相互污染 `state.json`。只有 `resume` / `fix` 命令需要降级并写回（`restore_writeback=True`）。
+9.  **视图与状态解耦**: CLI JSON 输出与 REPL 终端渲染必须通过统一的 view-model 层（`pipeline_engine.view_model`）从 runtime state 派生，不允许直接调用 `state.model_dump()` 或手工拼装展示字典作为对外接口。view-model 与 runtime state 在字段集合/顺序/语义上保持透明等价，以防止两套渲染长尾发散。
 
 ---
 
