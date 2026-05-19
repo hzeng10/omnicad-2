@@ -228,14 +228,15 @@ class RunManager:
         C1 修复：fix --input 改用 ``sm.replace_task_input()`` 公共 API，
         不再直接访问 ``sm._lock`` / ``sm._state``。
         """
-        ctx = await self._get_ctx(ref)
-
-        # A3：活跃运行时禁止 fix，防止并发改写状态
-        if ctx.is_active():
-            raise PipelineError(
-                f"run '{ctx.run_id}' 正在运行，请先 stop 后再 fix",
-                pipeline_id=ctx.pipeline_id,
-            )
+        # L1/A3: resolve + active-check under the same lock to close the TOCTOU
+        # window where a concurrent resume() could start the run between the two ops.
+        async with self._lock:
+            ctx = self._resolve_run(ref)
+            if ctx.is_active():
+                raise PipelineError(
+                    f"run '{ctx.run_id}' 正在运行，请先 stop 后再 fix",
+                    pipeline_id=ctx.pipeline_id,
+                )
 
         step_id, task_id = self._parse_task_locator(ctx, task_locator)
         pipeline_id = ctx.pipeline_id
