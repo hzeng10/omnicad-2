@@ -464,11 +464,11 @@ class MyTask(BaseTask):
 
 ### HTTP API 可选依赖（`pip install -e .[api]`，仅 `serve` 模式需要）
 
-| 软件包 | 版本限制 | 许可证 | 商业使用 |
+| 软件包 | 版本 | 许可证 | 商业使用 |
 |---|---|---|---|
-| fastapi | ≥0.115,<1.0 | MIT | ✓ |
-| uvicorn | ≥0.30 | BSD-3-Clause | ✓ |
-| sse-starlette | ≥2.0 | BSD-3-Clause | ✓ |
+| fastapi | 0.136.1 | MIT | ✓ |
+| uvicorn | 0.47.0 | BSD-3-Clause | ✓ |
+| sse-starlette | 3.4.4 | BSD-3-Clause | ✓ |
 
 ### 开发 / 测试依赖（不随产品分发）
 
@@ -477,7 +477,7 @@ class MyTask(BaseTask):
 | pytest | 9.0.3 | MIT | ✓ |
 | pytest-asyncio | 1.3.0 | Apache-2.0 | ✓ |
 | pytest-cov | 7.1.0 | MIT | ✓ |
-| httpx | ≥0.27 | BSD-3-Clause | ✓ |
+| httpx | 0.28.1 | BSD-3-Clause | ✓ |
 
 所有依赖均为宽松许可证（MIT / BSD / Apache-2.0），可在商业产品中使用，无 Copyleft 强制开源要求。主要义务：保留版权声明；Apache-2.0 额外要求标注修改内容，并附带专利授权。
 
