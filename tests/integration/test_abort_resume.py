@@ -183,10 +183,11 @@ async def test_run_id_stable_across_resume(tmp_path):
     run_state = await sm.get_run_state()
     original_run_id = run_state.run_id
 
-    # Resume (reset all paused tasks and run again)
+    # Resume (reset all paused tasks and pipeline status, as RunManager.resume() does)
     for step_id, step_state in run_state.steps.items():
         for tid in step_state.tasks:
             await sm.reset_for_resume(step_id, tid, include_paused=True)
+    await sm.reset_pipeline_status(Status.NEW)  # M3: start_pipeline() requires NEW
 
     abort2 = asyncio.Event()
     sem2 = asyncio.Semaphore(4)

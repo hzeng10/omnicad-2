@@ -135,8 +135,20 @@ class StateManager:
     # ─── pipeline 级别变更 ────────────────────────────────────────────────────
 
     async def start_pipeline(self) -> None:
-        """将 pipeline 状态置为 RUNNING 并记录开始时间。"""
+        """将 pipeline 状态置为 RUNNING 并记录开始时间。
+
+        M3 修复：仅允许从 NEW 状态启动，防止已完成（SUCCESS / FIXED / SKIPPED）
+        或已在运行的 pipeline 被意外覆盖为 RUNNING，从而保证 SUCCESS → RUNNING → FAILED
+        的非法迁移链不会发生。resume() 在调用本方法前会先调用 reset_pipeline_status(NEW)。
+        """
         async with self._lock:
+            if self._state.status != Status.NEW:
+                raise PipelineError(
+                    f"cannot start pipeline '{self._state.pipeline_id}': "
+                    f"current status is '{self._state.status.value}', expected 'new'. "
+                    "Call reset_pipeline_status(NEW) before starting.",
+                    pipeline_id=self._state.pipeline_id,
+                )
             self._state.status = Status.RUNNING
             self._state.started_at = _now()
             self._notify({"type": "pipeline_update", "status": "running"})
@@ -171,9 +183,21 @@ class StateManager:
     # ─── step 级别变更 ────────────────────────────────────────────────────────
 
     async def start_step(self, step_id: str) -> None:
-        """将步骤状态置为 RUNNING 并记录开始时间。"""
+        """将步骤状态置为 RUNNING 并记录开始时间。
+
+        M3 修复：仅允许从 NEW 状态启动，与 start_pipeline 保持一致。
+        init_step 始终为每个 step 创建全新的 StepState（NEW），正常流程下
+        本方法不会收到非 NEW 的 step，此处是防御性守卫。
+        """
         async with self._lock:
             step = self._step(step_id)
+            if step.status != Status.NEW:
+                raise PipelineError(
+                    f"cannot start step '{step_id}': "
+                    f"current status is '{step.status.value}', expected 'new'.",
+                    pipeline_id=self._state.pipeline_id,
+                    step_id=step_id,
+                )
             step.status = Status.RUNNING
             step.started_at = _now()
             snap = self._state.model_copy(deep=True)

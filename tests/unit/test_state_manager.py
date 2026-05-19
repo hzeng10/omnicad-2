@@ -245,6 +245,50 @@ async def test_reset_for_resume_clears_all_stale_task_fields(sm):
     assert ts.progress == 0
 
 
+# ── M3 regression tests ──────────────────────────────────────────────────────
+
+async def test_start_pipeline_blocks_non_new(sm):
+    """M3: start_pipeline raises PipelineError if status is not NEW."""
+    from pipeline_engine.core.errors import PipelineError
+    await sm.start_pipeline()
+    await sm.finish_pipeline(success=True)  # now SUCCESS
+
+    with pytest.raises(PipelineError, match="new"):
+        await sm.start_pipeline()
+
+
+async def test_start_pipeline_blocks_running(sm):
+    """M3: start_pipeline raises PipelineError if already RUNNING (double-start)."""
+    from pipeline_engine.core.errors import PipelineError
+    await sm.start_pipeline()  # NEW → RUNNING
+
+    with pytest.raises(PipelineError, match="new"):
+        await sm.start_pipeline()  # RUNNING → should raise
+
+
+async def test_start_step_blocks_non_new(sm):
+    """M3: start_step raises PipelineError if step is not NEW."""
+    from pipeline_engine.core.errors import PipelineError
+    await sm.init_step("s1", ["t1"])
+    await sm.start_step("s1")
+    await sm.finish_step("s1", success=True)  # now SUCCESS
+
+    with pytest.raises(PipelineError, match="new"):
+        await sm.start_step("s1")
+
+
+async def test_start_pipeline_allowed_after_reset(sm):
+    """M3: start_pipeline succeeds after reset_pipeline_status(NEW) clears a terminal state."""
+    await sm.start_pipeline()
+    await sm.finish_pipeline(success=True)  # SUCCESS
+
+    await sm.reset_pipeline_status(Status.NEW)  # reset by resume()
+    await sm.start_pipeline()  # must not raise
+
+    state = await sm.get_run_state()
+    assert state.status == Status.RUNNING
+
+
 async def test_notify_drops_full_queue(sm):
     """M1: _notify silently drops events for a full queue without raising."""
     from unittest.mock import patch
