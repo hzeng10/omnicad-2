@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -81,54 +80,17 @@ def _is_no_autoload(ctx: typer.Context) -> bool:
     return bool((ctx.obj or {}).get("no_autoload", False))
 
 
-# ─── Autoload helpers ────────────────────────────────────────────────────────
+def _make_service(workspace: Path, ctx: typer.Context):
+    """便捷工厂：创建与当前 CLI 上下文匹配的 PipelineService 实例。"""
+    from pipeline_engine.core.run_manager import RunManager
+    from pipeline_engine.service import PipelineService
 
-async def _autoload_pipelines(rm, base_dir: Path) -> list[dict]:
-    """扫描 <base_dir>/*/pipeline.yaml 并逐一注册。
-
-    Returns a list of per-file results: {path, pipeline_id, ok, error?}.
-    单个文件失败不影响其余文件。
-    """
-    from pipeline_engine.core.run_manager import RunManager  # 仅用于类型注解
-
-    results: list[dict] = []
-    if not base_dir.exists() or not base_dir.is_dir():
-        return results
-    for yaml_path in sorted(base_dir.glob("*/pipeline.yaml")):
-        try:
-            pid = await rm.load(yaml_path)
-            results.append({"path": str(yaml_path), "pipeline_id": pid, "ok": True})
-        except Exception as e:
-            results.append({
-                "path": str(yaml_path),
-                "pipeline_id": None,
-                "ok": False,
-                "error": str(e),
-            })
-            print(
-                f"[autoload WARNING] 加载失败 {yaml_path}: {e}",
-                file=sys.stderr,
-            )
-    return results
-
-
-async def _bootstrap(
-    rm,
-    ctx: typer.Context,
-    restore_runs: bool = False,
-    restore_writeback: bool = False,
-) -> None:
-    """重建 RunManager 状态：先从 registry 恢复，再 autoload。
-
-    ``restore_writeback=True`` 时，恢复 run 状态后会把遗留 RUNNING 降级为 FAILED
-    并写回磁盘（供 resume/fix 使用）。默认 False 表示只读恢复，不写磁盘，
-    适用于 status/inspect/log/list 等查询命令。
-    """
-    _reload_registry(rm, restore_runs=restore_runs, restore_writeback=restore_writeback)
-    if not _is_no_autoload(ctx):
-        pd = _get_pipelines_dir(ctx)
-        base_dir = pd if pd is not None else (Path.cwd() / "pipelines")
-        await _autoload_pipelines(rm, base_dir)
+    rm = RunManager(workspace)
+    return PipelineService(
+        rm,
+        pipelines_dir=_get_pipelines_dir(ctx),
+        no_autoload=_is_no_autoload(ctx),
+    )
 
 
 # ─── app.callback ─────────────────────────────────────────────────────────────
@@ -174,27 +136,19 @@ def load(
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """解析、校验并注册一个或多个 pipeline YAML 文件。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.cli_json import emit
 
     async def _load() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
-        loaded = []
-        all_ok = True
-        for p in paths:
-            try:
-                pid = await rm.load(p)
-                loaded.append({"path": str(p), "pipeline_id": pid, "ok": True})
-            except Exception as e:
-                loaded.append({"path": str(p), "pipeline_id": None, "ok": False, "error": str(e)})
-                all_ok = False
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
+        result = await svc.cmd_load(paths)
+        all_ok = all(item["ok"] for item in result["loaded"])
         if all_ok:
-            emit("load", loaded=loaded)
+            emit("load", **result)
         else:
             obj = {
                 "ok": False,
                 "command": "load",
-                "loaded": loaded,
+                **result,
                 "error": {"message": "一个或多个文件加载失败", "type": "LoadError"},
             }
             typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
@@ -211,15 +165,13 @@ def lint(
     path: Path = typer.Argument(..., help="要校验的 pipeline YAML 文件路径。"),
 ) -> None:
     """校验 pipeline YAML 语法与 DAG 合法性（不执行）。"""
-    from pipeline_engine.core.yaml_parser import load_pipeline_spec
-    from pipeline_engine.core.dag_validator import validate_pipeline
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.core.errors import PipelineError
 
     try:
-        spec = load_pipeline_spec(path)
-        validate_pipeline(spec)
-        emit("lint", path=str(path), pipeline_id=spec.pipeline.id, valid=True)
+        svc = _make_service(Path.cwd(), ctx)
+        result = asyncio.run(svc.cmd_lint(path))
+        emit("lint", **result)
     except PipelineError as e:
         raise emit_error("lint", e)
     except Exception as e:
@@ -236,19 +188,18 @@ def list_cmd(
     instance_flag: bool = typer.Option(False, "--instance", help="列出运行实例（pipeline_id / instance_id / status）。"),
 ) -> None:
     """列出已注册的 pipeline（默认）或运行实例（--instance）。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.core.errors import PipelineError
 
     async def _list() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
+            await svc.bootstrap(restore_runs=True)
             if instance_flag:
-                instances = await rm.list_instances()
-                emit("list", scope="instance", instances=instances)
+                result = await svc.cmd_list_instances()
             else:
-                emit("list", scope="pipeline", pipelines=rm.list_pipelines())
+                result = await svc.cmd_list_pipelines()
+            emit("list", **result)
         except PipelineError as e:
             raise emit_error("list", e)
         except Exception as e:
@@ -273,39 +224,23 @@ def start_cmd(
     ),
 ) -> None:
     """启动一个或多个 pipeline run（后台并发执行）。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
-    from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.cli_json import emit
 
     async def _run() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=False)
+            await svc.bootstrap(restore_runs=False)
         except Exception:
             pass  # autoload 失败不阻断
 
-        runs: list[dict] = []
-        any_error = False
-
-        for pid in pipeline_ids:
-            try:
-                run_id = await rm.start_run(pid, step_id=step, task_id=task)
-                entry: dict = {"pipeline_id": pid, "run_id": run_id, "ok": True}
-                if wait:
-                    if run_id in rm._runs:
-                        await rm._runs[run_id].await_main()
-                    state = await rm.get_run_state(run_id)
-                    entry["final_status"] = state.status.value
-                runs.append(entry)
-            except PipelineError as e:
-                runs.append({"pipeline_id": pid, "run_id": None, "ok": False, "error": str(e)})
-                any_error = True
+        result = await svc.cmd_start(pipeline_ids, step=step, task=task, wait=wait)
+        any_error = any(not r["ok"] for r in result["runs"])
 
         if any_error:
             obj = {
                 "ok": False,
                 "command": "start",
-                "runs": runs,
+                **result,
                 "error": {"message": "一个或多个 pipeline 启动失败", "type": "StartError"},
             }
             typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
@@ -313,14 +248,14 @@ def start_cmd(
         elif not wait:
             emit(
                 "start",
-                runs=runs,
+                **result,
                 warning=(
                     "runs will be cancelled when CLI exits; "
                     "use REPL or --wait for persistent execution"
                 ),
             )
         else:
-            emit("start", runs=runs)
+            emit("start", **result)
 
     asyncio.run(_run())
 
@@ -334,16 +269,15 @@ def stop(
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """中止指定 pipeline 实例（整个 run）。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.core.errors import PipelineError
 
     async def _stop() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
-            await rm.stop(ref)
-            emit("stop", stopped=ref)
+            await svc.bootstrap(restore_runs=True)
+            result = await svc.cmd_stop(ref)
+            emit("stop", **result)
         except PipelineError as e:
             raise emit_error("stop", e)
         except Exception as e:
@@ -362,19 +296,15 @@ def resume(
     include_paused: bool = typer.Option(False, "--include-paused", help="同时恢复 PAUSED 状态的任务。"),
 ) -> None:
     """恢复 FAILED（或 PAUSED）的 pipeline 实例，并等待其完成。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.core.errors import PipelineError
 
     async def _resume() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True, restore_writeback=True)
-            run_id = await rm.resume(ref, include_paused=include_paused)
-            run_ctx = rm._runs[run_id]
-            await run_ctx.await_main()
-            state = await rm.get_run_state(run_id)
-            emit("resume", resumed=run_id, final_status=state.status.value)
+            await svc.bootstrap(restore_runs=True, restore_writeback=True)
+            result = await svc.cmd_resume(ref, include_paused=include_paused)
+            emit("resume", **result)
         except PipelineError as e:
             raise emit_error("resume", e)
         except Exception as e:
@@ -395,23 +325,15 @@ def fix(
     input_path: Optional[Path] = typer.Option(None, "--input", help="注入 input.json 路径（任务状态重置为 NEW）。"),
 ) -> None:
     """向 pipeline 实例中的失败任务注入 output（FIXED）或替换 input（NEW）。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.core.errors import PipelineError
 
     async def _fix() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True, restore_writeback=True)
-            await rm.fix(
-                ref, task_locator,
-                output_path=str(output_path) if output_path else None,
-                input_path=str(input_path) if input_path else None,
-            )
-            if output_path:
-                emit("fix", instance_id=ref, task=task_locator, mode="output", new_status="fixed")
-            else:
-                emit("fix", instance_id=ref, task=task_locator, mode="input", new_status="new")
+            await svc.bootstrap(restore_runs=True, restore_writeback=True)
+            result = await svc.cmd_fix(ref, task_locator, output_path=output_path, input_path=input_path)
+            emit("fix", **result)
         except PipelineError as e:
             raise emit_error("fix", e)
         except Exception as e:
@@ -429,17 +351,15 @@ def status(
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """查看指定 pipeline 实例的整体状态与进度（JSON 输出）。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
+    from pipeline_engine.core.errors import PipelineError
 
     async def _status() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
-            state = await rm.get_run_state(ref)
-            from pipeline_engine.view_model import build_pipeline_status_view
-            emit("status", state=build_pipeline_status_view(state).model_dump(mode="json"))
+            await svc.bootstrap(restore_runs=True)
+            result = await svc.cmd_status(ref)
+            emit("status", **result)
         except PipelineError as e:
             raise emit_error("status", e)
         except Exception as e:
@@ -459,55 +379,15 @@ def inspect(
     task: Optional[str] = typer.Option(None, "--task", "-t", help="指定要查看的 task ID（需配合 --step）。"),
 ) -> None:
     """查看 pipeline 实例中 task 的详细信息（输入/输出/日志/堆栈）。"""
-    from pipeline_engine.core.run_manager import RunManager
-    from pipeline_engine.core.errors import PipelineError
     from pipeline_engine.cli_json import emit, emit_error
-    from pipeline_engine.view_model import (
-        build_pipeline_status_view,
-        build_task_detail_view,
-        build_task_status_view,
-    )
+    from pipeline_engine.core.errors import PipelineError
 
     async def _inspect() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
-            state = await rm.get_run_state(ref)
-
-            if step is None:
-                # 无 step：返回整体 state（同 status）
-                emit("inspect", state=build_pipeline_status_view(state).model_dump(mode="json"))
-                return
-
-            step_state = state.steps.get(step)
-            if step_state is None:
-                raise PipelineError(
-                    f"Step '{step}' 在 run '{ref}' 中不存在",
-                    pipeline_id=state.pipeline_id,
-                    step_id=step,
-                )
-
-            if task is None:
-                # 只指定 step：返回该 step 的所有 task 详情
-                tasks_detail = [
-                    build_task_status_view(ts).model_dump(mode="json")
-                    for ts in step_state.tasks.values()
-                ]
-                emit("inspect", step_id=step, step_status=step_state.status.value,
-                     tasks=tasks_detail)
-                return
-
-            # 指定 step + task
-            ts = step_state.tasks.get(task)
-            if ts is None:
-                raise PipelineError(
-                    f"Task '{task}' 在 step '{step}' 中不存在",
-                    pipeline_id=state.pipeline_id,
-                    step_id=step,
-                    task_id=task,
-                )
-            emit("inspect", task=build_task_detail_view(ts, log_tail_size=100).model_dump(mode="json"))
-
+            await svc.bootstrap(restore_runs=True)
+            result = await svc.cmd_inspect(ref, step=step, task=task)
+            emit("inspect", **result)
         except PipelineError as e:
             raise emit_error("inspect", e)
         except Exception as e:
@@ -529,69 +409,20 @@ def log_cmd(
     errors_only: bool = typer.Option(False, "--errors-only", help="仅显示 ERROR 行。"),
 ) -> None:
     """查看指定 pipeline 实例的 run.log（JSON 格式，含结构化行记录）。"""
-    from pipeline_engine.core.run_manager import RunManager
+    from pipeline_engine.cli_json import emit, emit_error
     from pipeline_engine.core.errors import PipelineError
-    from pipeline_engine.core import storage
-    from pipeline_engine.cli_json import emit, emit_error, parse_log_line
 
     async def _log() -> None:
-        rm = RunManager(_get_workspace(workspace, ctx))
+        svc = _make_service(_get_workspace(workspace, ctx), ctx)
         try:
-            await _bootstrap(rm, ctx, restore_runs=True)
-            ctx_ = rm._resolve_run(ref)
-            log_path = storage.get_run_log_path(rm.workspace, ctx_.pipeline_id, ctx_.run_id)
-            if not log_path.exists():
-                emit("log", run_id=ref, log_path=str(log_path),
-                     total=0, start=0, end=0, lines=[])
-                return
-
-            raw_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-
-            if errors_only:
-                raw_lines = [ln for ln in raw_lines if " ERROR " in ln]
-
-            total = len(raw_lines)
-            if all_:
-                start_idx, end_idx = 0, total
-                view = raw_lines
-            else:
-                end_idx = max(0, total - offset)
-                start_idx = max(0, end_idx - tail)
-                view = raw_lines[start_idx:end_idx]
-
-            lines = [parse_log_line(ln) for ln in view]
-            emit("log", run_id=ref, log_path=str(log_path),
-                 total=total, start=start_idx, end=end_idx, lines=lines)
-
+            await svc.bootstrap(restore_runs=True)
+            result = await svc.cmd_log(
+                ref, tail=tail, offset=offset, all_lines=all_, errors_only=errors_only
+            )
+            emit("log", **result)
         except PipelineError as e:
             raise emit_error("log", e)
         except Exception as e:
             raise emit_error("log", e)
 
     asyncio.run(_log())
-
-
-# ─── 内部工具 ─────────────────────────────────────────────────────────────────
-
-def _reload_registry(
-    rm,
-    restore_runs: bool = False,
-    restore_writeback: bool = False,
-) -> None:
-    """从磁盘重新加载 pipeline 注册表（及可选的 run 状态）。"""
-    from pipeline_engine.core import storage
-    from pipeline_engine.core.yaml_parser import load_pipeline_spec
-    from pipeline_engine.core.dag_validator import validate_pipeline
-
-    reg = storage.load_registry(rm.workspace)
-    for pid, meta in reg.items():
-        spec_path = meta.get("yaml_path")
-        if spec_path and pid not in rm._registry:
-            try:
-                spec = load_pipeline_spec(spec_path)
-                validate_pipeline(spec)
-                rm._registry[pid] = spec
-            except Exception:
-                pass
-    if restore_runs:
-        rm.restore_runs_from_disk(write_back=restore_writeback)

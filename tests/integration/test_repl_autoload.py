@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from pipeline_engine.core.run_manager import RunManager
-from pipeline_engine.cli import _autoload_pipelines
+from pipeline_engine.service import autoload_pipelines as _autoload_pipelines
 
 
 def _make_pipeline_yaml(base_dir: Path, pid: str) -> Path:

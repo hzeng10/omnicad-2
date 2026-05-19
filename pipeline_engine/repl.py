@@ -85,9 +85,9 @@ async def run_repl(
 
     # ── Autoload 启动时发现 pipelines ───────────────────────────────────────
     if not no_autoload:
-        from pipeline_engine.cli import _autoload_pipelines
+        from pipeline_engine.service import autoload_pipelines
         base_dir = pipelines_dir if pipelines_dir is not None else (workspace / "pipelines")
-        results = await _autoload_pipelines(rm, base_dir)
+        results = await autoload_pipelines(rm, base_dir)
         loaded_ok = [r for r in results if r["ok"]]
         loaded_fail = [r for r in results if not r["ok"]]
         if loaded_ok:
@@ -138,9 +138,9 @@ async def _run_repl_basic(
     """无 prompt_toolkit 时的简化 REPL（无历史/补全）。"""
     rm = RunManager(workspace)
     if not no_autoload:
-        from pipeline_engine.cli import _autoload_pipelines
+        from pipeline_engine.service import autoload_pipelines
         base_dir = pipelines_dir if pipelines_dir is not None else (workspace / "pipelines")
-        await _autoload_pipelines(rm, base_dir)
+        await autoload_pipelines(rm, base_dir)
     console.print("[bold green]Pipeline REPL（基础模式）[/bold green]")
     while True:
         try:
