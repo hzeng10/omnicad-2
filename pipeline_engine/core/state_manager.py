@@ -52,6 +52,36 @@ class StateManager:
     def __init__(self, run_state: PipelineRunState) -> None:
         self._state = run_state
         self._lock = asyncio.Lock()
+        # SSE/事件订阅者列表；每个订阅者持有一个有界 Queue（容量 256）。
+        # _notify 用 put_nowait — 不阻塞写者；队列满时丢弃（慢消费者无影响）。
+        self._subscribers: list[asyncio.Queue[dict]] = []
+
+    # ─── 事件订阅 ─────────────────────────────────────────────────────────────
+
+    def subscribe(self) -> "asyncio.Queue[dict]":
+        """注册订阅者，返回专属 Queue；每个事件会 put_nowait 到该 Queue。"""
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=256)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: "asyncio.Queue[dict]") -> None:
+        """注销订阅者，移除对应 Queue。"""
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
+    def _notify(self, event: dict) -> None:
+        """向所有订阅者广播事件（put_nowait；队列满时静默丢弃）。
+
+        必须在持有 _lock 的情况下调用（紧跟 _persist 之后），
+        以确保订阅者拿到的状态快照与持久化的状态一致。
+        """
+        for q in self._subscribers:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
 
     # ─── 读 API ───────────────────────────────────────────────────────────────
 
@@ -98,6 +128,7 @@ class StateManager:
             self._state.status = Status.RUNNING
             self._state.started_at = _now()
             self._persist()
+            self._notify({"type": "pipeline_update", "status": "running"})
 
     async def finish_pipeline(self, success: bool) -> None:
         """将 pipeline 状态置为 SUCCESS 或 FAILED 并记录结束时间。"""
@@ -105,6 +136,7 @@ class StateManager:
             self._state.status = Status.SUCCESS if success else Status.FAILED
             self._state.finished_at = _now()
             self._persist()
+            self._notify({"type": "pipeline_update", "status": self._state.status.value})
 
     async def reset_pipeline_status(self, status: Status) -> None:
         """重置 pipeline 级别的状态（供 RunManager.resume 调用）。
@@ -151,6 +183,8 @@ class StateManager:
             task.status = Status.RUNNING
             task.started_at = _now()
             self._persist()
+            self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
+                          "status": "running", "progress": task.progress})
 
     async def finish_task(
         self,
@@ -182,6 +216,8 @@ class StateManager:
             if log_path:
                 task.log_path = log_path
             self._persist()
+            self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
+                          "status": "success", "progress": 100})
 
     async def fail_task(
         self,
@@ -206,6 +242,8 @@ class StateManager:
             if exc is not None:
                 task.stack_trace = traceback.format_exc()
             self._persist()
+            self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
+                          "status": "failed", "progress": task.progress, "error": error})
 
     async def pause_task(self, step_id: str, task_id: str) -> None:
         """将 RUNNING 或 NEW 的任务置为 PAUSED（abort_event 触发时使用）。"""
@@ -214,6 +252,8 @@ class StateManager:
             if task.status in (Status.RUNNING, Status.NEW):
                 task.status = Status.PAUSED
                 self._persist()
+                self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
+                              "status": "paused", "progress": task.progress})
 
     async def update_progress(
         self, step_id: str, task_id: str, progress: int
@@ -228,6 +268,8 @@ class StateManager:
                 return
             task.progress = max(0, min(100, progress))
             self._persist()
+            self._notify({"type": "task_update", "step_id": step_id, "task_id": task_id,
+                          "status": "running", "progress": task.progress})
 
     async def recover_task(
         self,
