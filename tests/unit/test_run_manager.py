@@ -252,3 +252,170 @@ async def test_list_instances_no_runtime_error_on_concurrent_mutation(tmp_path):
 
     assert isinstance(result, list)
     assert len(result) >= N  # at minimum the original N runs
+
+
+# ── L5 tests: restore_runs_from_disk ─────────────────────────────────────────
+
+from pipeline_engine.core import storage
+from pipeline_engine.models.runtime_state import PipelineRunState
+
+
+def _write_run_state(
+    workspace: Path,
+    pipeline_id: str,
+    run_id: str,
+    status: Status,
+) -> None:
+    """Write a minimal state.json to disk so restore_runs_from_disk can load it."""
+    run_dir = storage.get_run_dir(workspace, pipeline_id, run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = PipelineRunState(
+        pipeline_id=pipeline_id,
+        run_id=run_id,
+        workspace=str(run_dir),
+        status=status,
+    )
+    storage.persist_state(state)
+
+
+def _simple_spec(pipeline_id: str) -> PipelineSpec:
+    return PipelineSpec(
+        version="1.0",
+        pipeline=PipelineMeta(id=pipeline_id, name="T", type="测试"),
+        steps=[StepSpec(id="s", tasks=[
+            TaskSpec(id="t", plugin=f"{__name__}._GatedTask"),
+        ])],
+    )
+
+
+def test_restore_loads_all_runs_from_disk(tmp_path):
+    """L5: restore_runs_from_disk loads every run directory that has a state.json."""
+    pid = "restore_pipe"
+    rm = RunManager(tmp_path)
+    rm._registry[pid] = _simple_spec(pid)
+
+    for i in range(3):
+        _write_run_state(tmp_path, pid, f"run_{i}", Status.SUCCESS)
+
+    rm.restore_runs_from_disk(write_back=False)
+
+    assert len(rm._runs) == 3
+    assert {"run_0", "run_1", "run_2"} == set(rm._runs.keys())
+
+
+def test_restore_skips_unregistered_pipeline(tmp_path):
+    """L5: runs for a pipeline_id not in _registry are silently skipped."""
+    rm = RunManager(tmp_path)
+    # Do NOT register "unknown_pipe"
+    _write_run_state(tmp_path, "unknown_pipe", "run_x", Status.SUCCESS)
+
+    rm.restore_runs_from_disk(write_back=False)
+
+    assert len(rm._runs) == 0
+
+
+def test_restore_skips_missing_state_json(tmp_path):
+    """L5: a run directory with no state.json is silently skipped."""
+    pid = "nojson_pipe"
+    rm = RunManager(tmp_path)
+    rm._registry[pid] = _simple_spec(pid)
+
+    # Create the run directory but don't write state.json
+    run_dir = storage.get_run_dir(tmp_path, pid, "run_empty")
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    rm.restore_runs_from_disk(write_back=False)
+
+    assert len(rm._runs) == 0
+
+
+def test_restore_does_not_double_load_existing_run(tmp_path):
+    """L5: a run_id already in _runs is not overwritten by restore."""
+    from unittest.mock import MagicMock
+
+    pid = "double_pipe"
+    rm = RunManager(tmp_path)
+    rm._registry[pid] = _simple_spec(pid)
+    _write_run_state(tmp_path, pid, "run_dup", Status.PAUSED)
+
+    # Pre-populate _runs with a sentinel ctx
+    sentinel = MagicMock()
+    rm._runs["run_dup"] = sentinel
+
+    rm.restore_runs_from_disk(write_back=False)
+
+    # Must still be the sentinel — not overwritten
+    assert rm._runs["run_dup"] is sentinel
+
+
+async def test_restore_write_back_demotes_running_orphan(tmp_path):
+    """L5: write_back=True calls demote_orphans_sync, turning RUNNING orphans → FAILED."""
+    pid = "orphan_pipe"
+    rm = RunManager(tmp_path)
+    rm._registry[pid] = _simple_spec(pid)
+
+    # Write a state where pipeline status is RUNNING (crashed mid-run)
+    run_dir = storage.get_run_dir(tmp_path, pid, "run_orphan")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = PipelineRunState(
+        pipeline_id=pid,
+        run_id="run_orphan",
+        workspace=str(run_dir),
+        status=Status.RUNNING,
+    )
+    storage.persist_state(state)
+
+    rm.restore_runs_from_disk(write_back=True)
+
+    assert "run_orphan" in rm._runs
+    restored = await rm._runs["run_orphan"].state_manager.get_run_state()
+    assert restored.status == Status.FAILED
+
+
+async def test_restore_write_back_false_leaves_running_as_is(tmp_path):
+    """L5: write_back=False does not modify a RUNNING orphan on disk."""
+    pid = "readonly_pipe"
+    rm = RunManager(tmp_path)
+    rm._registry[pid] = _simple_spec(pid)
+
+    run_dir = storage.get_run_dir(tmp_path, pid, "run_ro")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = PipelineRunState(
+        pipeline_id=pid,
+        run_id="run_ro",
+        workspace=str(run_dir),
+        status=Status.RUNNING,
+    )
+    storage.persist_state(state)
+
+    rm.restore_runs_from_disk(write_back=False)
+
+    assert "run_ro" in rm._runs
+    restored = await rm._runs["run_ro"].state_manager.get_run_state()
+    # Status must remain RUNNING — write_back=False must not demote
+    assert restored.status == Status.RUNNING
+
+
+async def test_restore_mixed_statuses_all_loaded(tmp_path):
+    """L5: SUCCESS, FAILED, PAUSED, NEW runs are all loaded by restore_runs_from_disk."""
+    pid = "mixed_pipe"
+    rm = RunManager(tmp_path)
+    rm._registry[pid] = _simple_spec(pid)
+
+    statuses = {
+        "run_success": Status.SUCCESS,
+        "run_failed": Status.FAILED,
+        "run_paused": Status.PAUSED,
+        "run_new": Status.NEW,
+    }
+    for run_id, st in statuses.items():
+        _write_run_state(tmp_path, pid, run_id, st)
+
+    rm.restore_runs_from_disk(write_back=False)
+
+    assert set(rm._runs.keys()) == set(statuses.keys())
+    for run_id, expected_st in statuses.items():
+        restored = await rm._runs[run_id].state_manager.get_run_state()
+        assert restored.status == expected_st, (
+            f"{run_id}: expected {expected_st}, got {restored.status}"
+        )
