@@ -43,8 +43,10 @@ async def run_events(run_id: str, request: Request):
     try:
         ctx = rm._resolve_run(run_id)
     except Exception as exc:
+        # Capture message before Python deletes exc at end of except block
+        _msg = str(exc)
         async def _err():
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            yield f"event: error\ndata: {json.dumps({'message': _msg})}\n\n"
         return StreamingResponse(_err(), media_type="text/event-stream")
 
     sm = ctx.state_manager

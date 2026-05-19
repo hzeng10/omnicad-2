@@ -14,6 +14,7 @@
 - **交互式 REPL** — 基于 `prompt_toolkit` 的 REPL 与调度器共享事件循环，非阻塞运行；`status --watch` 在任务执行中实时刷新 Rich 表格
 - **运行日志** — 每个 instance 一份 `run.log`，汇聚引擎生命周期事件、`pipeline_engine.*` Python logging、Task `self.logger` 自定义日志及 stdout/stderr；`log` 命令分页查看，ERROR 行红色高亮，resume 续写同一文件
 - **完善的状态机守卫** — `finish_task`/`fail_task`/`update_progress` 均内置非法迁移检查，防止并发竞争导致状态混乱
+- **HTTP REST API** — `pipeline_cli serve` 以 RESTful 接口暴露全部命令；SSE 端点实时推送 task/pipeline 状态变更；响应信封与 CLI JSON 输出完全一致
 - **90%+ 测试覆盖率** — 涵盖单元、集成、端到端三层
 
 ---
@@ -461,6 +462,14 @@ class MyTask(BaseTask):
 | prompt_toolkit | 3.0.52 | BSD | ✓ |
 | typer | 0.25.1 | MIT | ✓ |
 
+### HTTP API 可选依赖（`pip install -e .[api]`，仅 `serve` 模式需要）
+
+| 软件包 | 版本限制 | 许可证 | 商业使用 |
+|---|---|---|---|
+| fastapi | ≥0.115,<1.0 | MIT | ✓ |
+| uvicorn | ≥0.30 | BSD-3-Clause | ✓ |
+| sse-starlette | ≥2.0 | BSD-3-Clause | ✓ |
+
 ### 开发 / 测试依赖（不随产品分发）
 
 | 软件包 | 版本 | 许可证 | 商业使用 |
@@ -468,6 +477,7 @@ class MyTask(BaseTask):
 | pytest | 9.0.3 | MIT | ✓ |
 | pytest-asyncio | 1.3.0 | Apache-2.0 | ✓ |
 | pytest-cov | 7.1.0 | MIT | ✓ |
+| httpx | ≥0.27 | BSD-3-Clause | ✓ |
 
 所有依赖均为宽松许可证（MIT / BSD / Apache-2.0），可在商业产品中使用，无 Copyleft 强制开源要求。主要义务：保留版权声明；Apache-2.0 额外要求标注修改内容，并附带专利授权。
 
@@ -482,6 +492,70 @@ pytest tests/integration/                          # 仅集成测试
 pytest tests/e2e/ -v                               # 端到端测试（CAD 示例）
 pytest --cov=pipeline_engine --cov-fail-under=90   # 带覆盖率检查
 ```
+
+---
+
+## HTTP API（`serve` 模式）
+
+`pipeline_cli serve` 以 RESTful HTTP 方式暴露所有命令，供远程客户端或 AI Agent 通过 JSON 调用。
+
+### 启动
+
+```bash
+# 安装 HTTP API 依赖（仅 serve 模式需要）
+pip install -e .[api]
+
+# 启动服务（默认绑定 127.0.0.1:8765）
+pipeline_cli serve --workspace /path/to/workspace
+
+# 自定义端口
+pipeline_cli serve --workspace /path/to/workspace --port 9000
+```
+
+> 服务绑定 127.0.0.1（本机），无鉴权。服务退出时所有进行中的 run 会被取消。
+
+### 端点一览
+
+| 方法 | URL | 对应命令 | 说明 |
+|---|---|---|---|
+| POST | `/lint` | `lint` | 校验 YAML，不执行 |
+| POST | `/pipelines` | `load` | 注册 YAML 文件 |
+| GET | `/pipelines` | `list --pipeline` | 列出已注册 pipeline |
+| GET | `/runs` | `list --instance` | 列出运行实例 |
+| POST | `/runs` | `start` | 启动 pipeline run（202 Accepted） |
+| GET | `/runs/{run_id}` | `status` | 查看 run 整体状态 |
+| GET | `/runs/{run_id}/steps/{step_id}` | `inspect --step` | 查看 step 状态 |
+| GET | `/runs/{run_id}/tasks/{step_id}/{task_id}` | `inspect --step --task` | 查看 task 详情 |
+| POST | `/runs/{run_id}:stop` | `stop` | 中止 run |
+| POST | `/runs/{run_id}:resume` | `resume` | 恢复 FAILED/PAUSED run |
+| POST | `/runs/{run_id}/tasks/{step_id}/{task_id}:fix` | `fix` | 注入修复数据 |
+| GET | `/runs/{run_id}/log` | `log` | 查看 run.log |
+| GET (SSE) | `/runs/{run_id}/events` | — | 流式推送状态变更 |
+
+所有响应均遵循与 CLI 一致的 JSON 信封格式：`{"ok": true/false, "command": "...", ...}`。
+
+### 示例
+
+```bash
+# 注册并启动
+curl -s -X POST http://127.0.0.1:8765/pipelines \
+     -H 'Content-Type: application/json' \
+     -d '{"paths": ["/path/to/pipeline.yaml"]}' | jq .
+
+curl -s -X POST http://127.0.0.1:8765/runs \
+     -H 'Content-Type: application/json' \
+     -d '{"pipeline_ids": ["my_pipeline"]}' | jq .
+
+# 查看状态
+curl -s http://127.0.0.1:8765/runs/<run_id> | jq .state.status
+
+# 订阅 SSE 事件流（直到 terminal 事件）
+curl -N http://127.0.0.1:8765/runs/<run_id>/events
+```
+
+### OpenAPI 文档
+
+服务启动后访问 `http://127.0.0.1:8765/docs`（Swagger UI）或 `http://127.0.0.1:8765/redoc`。
 
 ---
 
@@ -505,12 +579,28 @@ FAILED  → NEW                  （reset_for_resume）
 PAUSED  → NEW                  （reset_for_resume --include-paused）
 ```
 
+层次结构：
+
+```
+CLI (typer)   REST API (FastAPI)   REPL (prompt_toolkit)
+       \              |              /
+        └──────── PipelineService ──────────┐
+                       │                   │
+                   RunManager         autoload
+                       │
+            ┌──────────┴──────────┐
+         RunContext           RunContext  ...
+     (scheduler + state_manager + abort_event)
+```
+
+`PipelineService` 是 CLI / REST 两个 transport 层的唯一业务逻辑来源；CLI 每次命令创建新实例，REST server 在启动时创建长生命周期实例。
+
 关键模块（`pipeline_engine/core/`）：
 
 | 模块 | 职责 |
 |---|---|
 | `scheduler.py` | 驱动单次 run 的完整执行流程（拓扑排序 + 并发分发） |
-| `state_manager.py` | 运行时状态的唯一可信来源（asyncio.Lock 保护 + 状态机守卫） |
+| `state_manager.py` | 运行时状态的唯一可信来源（asyncio.Lock 保护 + 状态机守卫 + 轻量事件广播） |
 | `run_manager.py` | 进程级协调器（加载/启动/停止/恢复/修复多个 pipeline） |
 | `run_context.py` | 单次 run 的运行时容器（scheduler + state_manager + abort_event） |
 | `run_logger.py` | per-run 日志管理（FileHandler 隔离 + ContextVar 多 run 并发安全 + stdout 路由） |

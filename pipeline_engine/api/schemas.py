@@ -29,6 +29,5 @@ class ResumeRequest(BaseModel):
 
 
 class FixRequest(BaseModel):
-    task: str = Field(..., description="Task locator: 'step_id/task_id' or 'task_id'.")
     mode: str = Field(..., pattern="^(output|input)$", description="Fix mode: 'output' or 'input'.")
     path: str = Field(..., description="Path to the replacement JSON file.")
