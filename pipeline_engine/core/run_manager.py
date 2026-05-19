@@ -138,15 +138,15 @@ class RunManager:
             )
             self._runs[run_id] = ctx
             self._prune_terminal_runs()  # H1: keep _runs bounded
-
-        if step_id and task_id:
-            coro = ctx.scheduler.run_task(step_id, task_id)
-        elif step_id:
-            coro = ctx.scheduler.run_step(step_id)
-        else:
-            coro = ctx.scheduler.run()
-
-        ctx.main_task = asyncio.create_task(coro, name=f"run-{run_id}")
+            # H9: assign main_task inside the lock so is_active() is immediately
+            # consistent with the run being in _runs.
+            if step_id and task_id:
+                coro = ctx.scheduler.run_task(step_id, task_id)
+            elif step_id:
+                coro = ctx.scheduler.run_step(step_id)
+            else:
+                coro = ctx.scheduler.run()
+            ctx.main_task = asyncio.create_task(coro, name=f"run-{run_id}")
         return run_id
 
     # ─── 停止 ─────────────────────────────────────────────────────────────────
@@ -195,16 +195,17 @@ class RunManager:
         # C1：使用公共 API 重置 pipeline 状态，避免直接访问内部属性
         await sm.reset_pipeline_status(Status.NEW)
 
-        # H4 修复：在 _lock 内原子替换 abort_event，与 stop() 的读取互斥，
-        # 防止 stop() 读到即将被替换的旧 event 导致 stop 失效。
+        # H4/H9: assign abort_event and main_task atomically inside lock.
+        # stop() reads abort_event under the same lock, so the new event and
+        # the new task are always visible together — no intermediate state where
+        # abort_event is new but main_task is still the completed previous task.
         new_event = asyncio.Event()
         async with self._lock:
             ctx.abort_event = new_event
             ctx.scheduler._abort_event = new_event
-
-        ctx.main_task = asyncio.create_task(
-            ctx.scheduler.run(), name=f"run-{ctx.run_id}-resume"
-        )
+            ctx.main_task = asyncio.create_task(
+                ctx.scheduler.run(), name=f"run-{ctx.run_id}-resume"
+            )
         return ctx.run_id
 
     # ─── 修复 ─────────────────────────────────────────────────────────────────

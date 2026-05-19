@@ -1,11 +1,38 @@
 """Unit tests for _new_run_id format and collision retry logic."""
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
-from pipeline_engine.core.run_manager import _new_run_id
+from pipeline_engine.core.base_task import BaseTask
+from pipeline_engine.core.run_manager import RunManager, _new_run_id
+from pipeline_engine.models.pipeline_spec import PipelineMeta, PipelineSpec, StepSpec, TaskSpec
+from pipeline_engine.models.runtime_state import Status
+
+
+# ── stub task used by H9 test ─────────────────────────────────────────────────
+
+class _GatedTask(BaseTask):
+    """Blocks until a module-level gate event is set."""
+    gate: asyncio.Event | None = None
+
+    async def execute(self, inputs, progress):
+        if self.gate:
+            await self.gate.wait()
+        return {}
+
+
+def _gated_spec(pipeline_id: str) -> PipelineSpec:
+    return PipelineSpec(
+        version="1.0",
+        pipeline=PipelineMeta(id=pipeline_id, name="T", type="测试"),
+        steps=[StepSpec(id="s", tasks=[
+            TaskSpec(id="t", plugin=f"{__name__}._GatedTask"),
+        ])],
+    )
 
 
 _FORMAT_RE = re.compile(r"^.+_\d{8}-\d{6}_\d{4}$")
@@ -113,3 +140,51 @@ def test_prune_terminal_runs_evicts_oldest(tmp_path):
         assert f"run_{i:04d}" not in rm._runs
     # run_0005 and beyond are retained
     assert f"run_{5:04d}" in rm._runs
+
+
+# ── H9 tests ──────────────────────────────────────────────────────────────────
+
+async def test_is_active_true_immediately_after_start_run(tmp_path):
+    """H9: main_task assigned inside _lock in start_run → is_active() True at once."""
+    _GatedTask.gate = asyncio.Event()  # block so run doesn't finish before we check
+    rm = RunManager(tmp_path)
+    rm._registry["h9_pipe"] = _gated_spec("h9_pipe")
+
+    run_id = await rm.start_run("h9_pipe")
+    ctx = rm._runs[run_id]
+
+    # No await between start_run() and this check — task must already be active
+    assert ctx.is_active(), "main_task should be active immediately after start_run()"
+
+    # Unblock and wait for clean teardown
+    _GatedTask.gate.set()
+    await ctx.main_task
+
+
+async def test_is_active_true_immediately_after_resume(tmp_path):
+    """H9: main_task assigned inside _lock in resume() → is_active() True at once."""
+    _GatedTask.gate = asyncio.Event()  # block during first run so we can abort it
+    rm = RunManager(tmp_path)
+    rm._registry["h9_pipe2"] = _gated_spec("h9_pipe2")
+
+    run_id = await rm.start_run("h9_pipe2")
+    ctx = rm._runs[run_id]
+
+    # Abort — _GatedTask will see abort_event and be paused
+    await rm.stop(run_id)
+    _GatedTask.gate.set()  # unblock so the run actually finishes
+    await ctx.main_task
+
+    assert not ctx.is_active()
+
+    # Reset gate so the resumed run blocks long enough for us to inspect
+    _GatedTask.gate = asyncio.Event()
+
+    await rm.resume(run_id, include_paused=True)
+
+    # No await between resume() and this check
+    assert ctx.is_active(), "main_task should be active immediately after resume()"
+
+    # Unblock and wait for clean teardown
+    _GatedTask.gate.set()
+    await ctx.main_task
