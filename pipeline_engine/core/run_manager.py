@@ -298,9 +298,16 @@ class RunManager:
         ]
 
     async def list_instances(self) -> list[dict[str, Any]]:
-        """列出所有运行实例的摘要信息（pipeline_id / instance_id / status）。"""
+        """列出所有运行实例的摘要信息（pipeline_id / instance_id / status）。
+
+        H3 修复：在 _lock 内制作 _runs 快照，再在锁外对快照逐项 await，
+        防止 start_run() 在 await 让出期间修改 _runs 导致
+        RuntimeError: dictionary changed size during iteration。
+        """
+        async with self._lock:
+            snap = list(self._runs.items())
         result = []
-        for run_id, ctx in self._runs.items():
+        for run_id, ctx in snap:
             state = await ctx.state_manager.get_run_state()
             result.append({
                 "pipeline_id": ctx.pipeline_id,

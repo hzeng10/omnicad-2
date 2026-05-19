@@ -188,3 +188,67 @@ async def test_is_active_true_immediately_after_resume(tmp_path):
     # Unblock and wait for clean teardown
     _GatedTask.gate.set()
     await ctx.main_task
+
+
+# ── H3 tests ──────────────────────────────────────────────────────────────────
+
+async def test_list_instances_returns_snapshot(tmp_path):
+    """H3: list_instances result equals the set of runs present at snapshot time."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    rm = RunManager(tmp_path)
+    N = 10
+    for i in range(N):
+        ctx = MagicMock()
+        ctx.pipeline_id = f"pipe_{i}"
+        ms = MagicMock()
+        ms.status.value = "success"
+        ctx.state_manager.get_run_state = AsyncMock(return_value=ms)
+        rm._runs[f"run_{i:04d}"] = ctx
+
+    instances = await rm.list_instances()
+
+    assert len(instances) == N
+    ids = {inst["instance_id"] for inst in instances}
+    assert ids == {f"run_{i:04d}" for i in range(N)}
+
+
+async def test_list_instances_no_runtime_error_on_concurrent_mutation(tmp_path):
+    """H3: RuntimeError must not occur when _runs is mutated while list_instances runs.
+
+    Before the fix, iterating self._runs.items() with an await yield in the loop
+    body allowed start_run() to insert into _runs mid-iteration, causing
+    RuntimeError: dictionary changed size during iteration.
+    After the fix the snapshot is taken under _lock; mutations only affect _runs,
+    not the already-captured list.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    rm = RunManager(tmp_path)
+    N = 30
+
+    for i in range(N):
+        ctx = MagicMock()
+        ctx.pipeline_id = f"pipe_{i}"
+        ms = MagicMock()
+        ms.status.value = "running"
+        ctx.state_manager.get_run_state = AsyncMock(return_value=ms)
+        rm._runs[f"run_{i:04d}"] = ctx
+
+    async def add_more():
+        """Simulates concurrent start_run() inserting entries under _lock."""
+        for j in range(N, N + 20):
+            async with rm._lock:
+                extra = MagicMock()
+                extra.pipeline_id = "extra_pipe"
+                extra.is_active.return_value = False
+                ms2 = MagicMock()
+                ms2.status.value = "new"
+                extra.state_manager.get_run_state = AsyncMock(return_value=ms2)
+                rm._runs[f"run_{j:04d}"] = extra
+
+    # Must complete without RuntimeError regardless of interleaving
+    result, _ = await asyncio.gather(rm.list_instances(), add_more())
+
+    assert isinstance(result, list)
+    assert len(result) >= N  # at minimum the original N runs
