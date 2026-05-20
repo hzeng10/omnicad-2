@@ -459,3 +459,43 @@ def test_status_fallback_when_snapshot_raises(tmp_path):
         for comp in completions
     ]
     assert any("status=?" in m for m in meta_values)
+
+
+# ─── instance-ID sort order ───────────────────────────────────────────────────
+
+def test_instance_ids_sorted_latest_first(tmp_path):
+    """_complete_instance_ids must yield runs newest-first (descending timestamp)."""
+    rm = RunManager(tmp_path)
+    rm._registry["mypipe"] = _make_spec("mypipe")
+    old_id  = "mypipe_20260101-000000_0001"
+    mid_id  = "mypipe_20260301-120000_0002"
+    new_id  = "mypipe_20260520-235959_0003"
+    for rid in (old_id, mid_id, new_id):
+        rm._runs[rid] = _make_ctx("mypipe", rid)
+    c = PipelineReplCompleter(rm)
+
+    doc = Document("status ")
+    completions = list(c.get_completions(doc, None))
+    displayed = [comp.display if isinstance(comp.display, str) else comp.display[0][1]
+                 for comp in completions]
+    assert displayed == [new_id, mid_id, old_id]
+
+
+def test_instance_ids_partial_prefix_still_sorted(tmp_path):
+    """Filtered completions (partial prefix) still appear newest-first."""
+    rm = RunManager(tmp_path)
+    rm._registry["mypipe"] = _make_spec("mypipe")
+    ids = [
+        "mypipe_20260101-000000_0001",
+        "mypipe_20260301-120000_0002",
+        "mypipe_20260520-235959_0003",
+    ]
+    for rid in ids:
+        rm._runs[rid] = _make_ctx("mypipe", rid)
+    c = PipelineReplCompleter(rm)
+
+    doc = Document("inspect mypipe_")
+    completions = list(c.get_completions(doc, None))
+    displayed = [comp.display if isinstance(comp.display, str) else comp.display[0][1]
+                 for comp in completions]
+    assert displayed == [ids[2], ids[1], ids[0]]

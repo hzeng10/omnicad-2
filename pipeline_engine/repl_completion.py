@@ -162,7 +162,11 @@ class PipelineReplCompleter(Completer):
                 yield Completion(pid[len(current):], display=pid, display_meta=meta)
 
     def _complete_instance_ids(self, current: str) -> Iterable[Completion]:
-        for run_id, ctx in sorted(self._rm._runs.items()):
+        for run_id, ctx in sorted(
+            self._rm._runs.items(),
+            key=lambda kv: kv[0].rsplit("_", 2)[1],
+            reverse=True,
+        ):
             if run_id.lower().startswith(current.lower()):
                 pid = ctx.pipeline_id
                 status_val = self._get_status(ctx)
