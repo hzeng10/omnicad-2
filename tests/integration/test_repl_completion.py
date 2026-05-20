@@ -257,6 +257,99 @@ def test_task_flag_step_slash_exact_match(tmp_path):
     assert "step_b/task_z" not in results
 
 
+# ─── log flag completions (issue 1) ──────────────────────────────────────────
+
+def test_log_flag_completion_includes_tail_and_offset(tmp_path):
+    """--tail and --offset must appear in the context menu for the log command."""
+    rm = RunManager(tmp_path)
+    run_id = "mypipe_20260520-000000_0001"
+    rm._runs[run_id] = _make_ctx("mypipe", run_id)
+    c = PipelineReplCompleter(rm)
+
+    results = _complete(c, f"log {run_id} --")
+    assert "--tail" in results
+    assert "--offset" in results
+    assert "--all" in results
+    assert "--errors-only" in results
+
+
+def test_log_tail_already_used_not_offered_again(tmp_path):
+    """After --tail is typed, it should not be offered again."""
+    rm = RunManager(tmp_path)
+    run_id = "mypipe_20260520-000000_0002"
+    rm._runs[run_id] = _make_ctx("mypipe", run_id)
+    c = PipelineReplCompleter(rm)
+
+    results = _complete(c, f"log {run_id} --tail 50 --")
+    assert "--tail" not in results
+    assert "--all" in results
+
+
+# ─── task_ref filtered by --step (issue 2) ────────────────────────────────────
+
+def test_task_filtered_by_step_flag_start(tmp_path):
+    """start --step parse_dxf --task should list only parse_dxf tasks, no prefix."""
+    rm = RunManager(tmp_path)
+    spec = _make_spec("cad_pipe", {
+        "parse_dxf": ["extract_lines", "extract_arcs"],
+        "recognize":  ["rec_building", "rec_cable"],
+    })
+    rm._registry["cad_pipe"] = spec
+    c = PipelineReplCompleter(rm)
+
+    results = _complete(c, "start cad_pipe --step parse_dxf --task ")
+    assert "extract_lines" in results
+    assert "extract_arcs" in results
+    # Must NOT show tasks from other steps or with prefix
+    assert "rec_building" not in results
+    assert "parse_dxf/extract_lines" not in results
+
+
+def test_task_filtered_by_step_flag_inspect(tmp_path):
+    """inspect run_id --step parse_dxf --task should list only parse_dxf tasks."""
+    rm = RunManager(tmp_path)
+    spec = _make_spec("cad_pipe", {
+        "parse_dxf": ["extract_lines", "extract_arcs"],
+        "recognize":  ["rec_building"],
+    })
+    rm._registry["cad_pipe"] = spec
+    run_id = "cad_pipe_20260520-000000_0001"
+    rm._runs[run_id] = _make_ctx("cad_pipe", run_id)
+    c = PipelineReplCompleter(rm)
+
+    results = _complete(c, f"inspect {run_id} --step parse_dxf --task ")
+    assert "extract_lines" in results
+    assert "extract_arcs" in results
+    assert "rec_building" not in results
+    assert "parse_dxf/extract_lines" not in results
+
+
+def test_task_no_step_flag_still_shows_slash_format(tmp_path):
+    """Without --step, --task completion shows all as step_id/task_id (unchanged)."""
+    rm = RunManager(tmp_path)
+    spec = _make_spec("cad_pipe", {
+        "parse_dxf": ["extract_lines"],
+        "recognize":  ["rec_building"],
+    })
+    rm._registry["cad_pipe"] = spec
+    c = PipelineReplCompleter(rm)
+
+    results = _complete(c, "start cad_pipe --task ")
+    assert "parse_dxf/extract_lines" in results
+    assert "recognize/rec_building" in results
+
+
+def test_task_step_flag_unknown_step_returns_empty(tmp_path):
+    """If --step points to a non-existent step, --task should return no completions."""
+    rm = RunManager(tmp_path)
+    spec = _make_spec("cad_pipe", {"parse_dxf": ["t1"]})
+    rm._registry["cad_pipe"] = spec
+    c = PipelineReplCompleter(rm)
+
+    results = _complete(c, "start cad_pipe --step nonexistent_step --task ")
+    assert results == []
+
+
 # ─── flag completion ──────────────────────────────────────────────────────────
 
 def test_flag_completion_shows_available_flags(tmp_path):

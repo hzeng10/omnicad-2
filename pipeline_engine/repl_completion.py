@@ -56,7 +56,7 @@ COMMANDS: dict[str, _Grammar] = {
                ),
     "log":     _Grammar(
                    args=["ref"],
-                   flags={"--all", "--errors-only"},
+                   flags={"--all", "--errors-only", "--tail", "--offset"},
                    flag_values={"--tail": "num", "--offset": "num"},
                ),
 }
@@ -140,7 +140,8 @@ class PipelineReplCompleter(Completer):
         elif kind == "task_ref":
             pid = self._extract_pipeline_context(cmd, completed)
             if pid:
-                yield from self._complete_task_refs(pid, current)
+                step_filter = self._extract_step_filter(completed)
+                yield from self._complete_task_refs(pid, current, step_filter=step_filter)
         elif kind == "num":
             return  # free numeric input — no completion candidates
         elif kind == "path":
@@ -180,10 +181,26 @@ class PipelineReplCompleter(Completer):
                     display_meta=f"step #{idx + 1}",
                 )
 
-    def _complete_task_refs(self, pid: str, current: str) -> Iterable[Completion]:
+    def _complete_task_refs(
+        self, pid: str, current: str, *, step_filter: str | None = None
+    ) -> Iterable[Completion]:
         spec = self._rm._registry.get(pid)
         if not spec:
             return
+        # --step already typed: show only that step's tasks as bare task_id (no prefix)
+        if step_filter is not None:
+            for step in spec.steps:
+                if step.id == step_filter:
+                    for task in step.tasks:
+                        if task.id.lower().startswith(current.lower()):
+                            yield Completion(
+                                task.id[len(current):],
+                                display=task.id,
+                                display_meta=f"task in {step.id}",
+                            )
+                    return  # step found — stop even if no tasks matched
+            return  # step_filter given but step not found → no completions
+        # No step filter — existing behavior:
         # If current contains '/' → user typed "step_id/", complete only task part
         if "/" in current:
             step_prefix, task_prefix = current.split("/", 1)
@@ -259,6 +276,15 @@ class PipelineReplCompleter(Completer):
             return self._rm._runs[first_pos].pipeline_id
         if first_pos in self._rm._registry:
             return first_pos
+        return None
+
+    def _extract_step_filter(self, completed: list[str]) -> str | None:
+        """Return the --step value from already-typed tokens, or None."""
+        for i, tok in enumerate(completed):
+            if tok == "--step" and i + 1 < len(completed):
+                val = completed[i + 1]
+                if not val.startswith("--"):
+                    return val
         return None
 
     @staticmethod
