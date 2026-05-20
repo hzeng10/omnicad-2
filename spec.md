@@ -137,7 +137,7 @@
 | `GET`  | `/runs` | `list --instance` |
 | `GET`  | `/runs/{run_id}` | `status` |
 | `POST` | `/runs/{run_id}:stop` | `stop` |
-| `POST` | `/runs/{run_id}:resume` | `resume` |
+| `POST` | `/runs/{run_id}:resume` | `resume`（异步，立即返回 202；响应仅含 `resumed`，无 `final_status`） |
 | `GET`  | `/runs/{run_id}/events` | SSE 实时事件流 |
 | `POST` | `/runs/{run_id}/tasks/{step_id}/{task_id}:fix` | `fix` |
 | `GET`  | `/runs/{run_id}/log` | `log` |
@@ -148,6 +148,8 @@
 **SSE 事件流**（`GET /runs/{run_id}/events`）：订阅状态变更事件，每 25 秒发送一次心跳保活（`: heartbeat`），检测到客户端断开后停止推送。pipeline 到达终态时推送 `event: terminal` 后关闭流。
 
 **resume 守卫（C2）**：REST 的 `:resume` 拒绝对已处于 `SUCCESS` / `FIXED` / `SKIPPED` 终态的 run 发起 resume，防止重复执行有副作用的任务。CLI `resume` 子命令不受此限制（允许重新运行已完成的 run）。
+
+**REST resume 非阻塞（H2）**：`:resume` 在触发后台调度后立即返回 202 Accepted，响应体仅含 `{"ok": true, "command": "resume", "resumed": "<run_id>"}`，不含 `final_status`（因为 run 尚未完成）。客户端通过 `GET /runs/{run_id}` 轮询或订阅 SSE 事件流跟踪执行进度。CLI `resume` 子命令仍阻塞到完成并返回 `final_status`，行为不变。
 
 **响应信封**：所有端点返回与 CLI JSON 子命令一致的 `{"ok": bool, "command": "...", ...payload}` 信封格式，由 `envelope_ok()` / `envelope_err()` 统一构建（定义在 `pipeline_engine/api/schemas.py`）。
 
