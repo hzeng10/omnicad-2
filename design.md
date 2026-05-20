@@ -543,6 +543,8 @@ CLI 启动时（REPL 与所有一次性子命令）自动扫描 `<base_dir>/*/pi
 
 **集成点**：`_bootstrap(rm, ctx, restore_runs, restore_writeback)` 先调 `_reload_registry`（从 registry.json 恢复历史注册），再调 `_autoload_pipelines`；`rm.load` 幂等，两者顺序明确。REPL 模式在 `run_repl()` 进入 prompt 循环前调用，并打印"已加载 N 个 pipeline"摘要。新增子命令须依据是否需写回，显式选择 `restore_writeback=True`（仅 resume/fix）或默认 `False`（查询类命令）。
 
+**REPL 会话隔离**：REPL bootstrap 调用 `svc.bootstrap(restore_runs=False, restore_writeback=False)`。`restore_runs=False` 确保只重建 pipeline spec 注册表（用于 `start` 补全）而不从磁盘恢复旧 run 实例；Tab 补全的 instance_id 候选列表因此仅包含当前 REPL 会话启动的 run，避免历史遗留实例污染上下文菜单。
+
 ### 6.10 JSON 输出模块（`cli_json.py`）
 
 所有一次性子命令通过此模块统一格式化输出，REPL 路径不涉及。
@@ -759,16 +761,17 @@ PromptSession
 | `list` | — | — | `--pipeline`, `--instance` |
 | `start` | `pipeline_id` | `--step`→`step_id`, `--task`→`task_ref` | `--wait` |
 | `stop` / `resume` / `status` / `inspect` / `fix` | `ref`（instance_id） | `fix`: `--task`→`task_ref`, `--output`/`--input`→`path`; `start`/`inspect`: `--step`→`step_id`, `--task`→`task_ref` | 各命令自有 |
+| `log` | `ref`（instance_id） | `--tail`→`num`, `--offset`→`num` | `--all`, `--errors-only` |
 
 #### 动态候选 & display_meta
 
-| kind | 候选来源 | display_meta |
-|---|---|---|
-| `pipeline_id` | `rm._registry.keys()` | `<type> | <name>` |
-| `ref` (instance_id) | `rm._runs.keys()` | `pipeline=<pid> | status=<status>` |
-| `step_id` | 从已输入的 pipeline_id/ref 反查 `_registry[pid].steps` | `step #<N>` |
-| `task_ref` | 同上，格式 `step_id/task_id` | `task in <step>` |
-| `path` | 委托 `PathCompleter` | PathCompleter 接管 |
+| kind | 候选来源 | display_meta | 排序 |
+|---|---|---|---|
+| `pipeline_id` | `rm._registry.keys()` | `<type> \| <name>` | 字母升序 |
+| `ref` (instance_id) | `rm._runs.keys()` | `pipeline=<pid> \| status=<status>` | 按 run_id 内嵌时间戳**倒序**（`run_id.rsplit("_", 2)[1]`）；最新 run 优先 |
+| `step_id` | 从已输入的 pipeline_id/ref 反查 `_registry[pid].steps` | `step #<N>` | spec 定义顺序 |
+| `task_ref` | 同上；若已输入 `--step <id>` 则仅列该 step 的任务（裸 task_id，无 `step_id/` 前缀）；否则以 `step_id/task_id` 全量展示 | `task in <step>` | spec 定义顺序 |
+| `path` | 委托 `PathCompleter` | PathCompleter 接管 | 文件系统顺序 |
 
 `ref → pipeline_id` 反查：直接读取 `rm._runs[run_id].pipeline_id`，不做字符串解析（instance_id 格式 `<pipeline_id>_yyyyMMdd-hhmmss_<4digit>` 中 pipeline_id 本身可能包含 `_`，字符串分割有歧义）。
 

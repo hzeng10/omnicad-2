@@ -118,7 +118,9 @@
 ### 3.3 交互特性
 *   **非阻塞 REPL**: 任务在后台异步执行，前台 REPL 始终保持响应，允许用户在任务执行时输入查询或干预指令。
 *   **终端风格**: 采用文本行交互，支持命令补全与历史记录。
-*   **Tab 补全与联想**: REPL 支持 Tab 键补全及边输入边联想（complete_while_typing）。补全范围覆盖：命令名、pipeline_id（已 `load` 的）、instance_id（已启动的实例，含 `pipeline=<pid> | status=<status>` 旁注）、`--step`/`--task` 参数值（从 PipelineSpec 动态读取）、以及 `load` / `fix --output` / `fix --input` 的文件路径。
+*   **Tab 补全与联想**: REPL 支持 Tab 键补全及边输入边联想（complete_while_typing）。补全范围覆盖：命令名、pipeline_id（已 `load` 的）、instance_id（已启动的实例，含 `pipeline=<pid> | status=<status>` 旁注）、`--step`/`--task` 参数值（从 PipelineSpec 动态读取）、以及 `load` / `fix --output` / `fix --input` 的文件路径。补全行为细节：
+    * instance_id 候选按启动时间戳**倒序**排列（最新实例在前），适用于 `status` / `inspect` / `stop` / `resume` / `log` / `fix` 等所有接受 `ref` 参数的命令。
+    * `start` / `inspect` 命令中，若已输入 `--step <step_id>`，则 `--task` 补全仅列出该 step 内的任务（以裸 task_id 形式显示，不带 `step_id/` 前缀）；未输入 `--step` 时，以 `step_id/task_id` 格式列出全部任务（原有行为）。
 *   **stop 范围**: `stop` 始终中止整个实例；task 级 Paused 状态仅由调度器内部产生（abort_event 处理路径），不作为用户接口暴露。
 
 ### 3.4 HTTP REST API（serve 模式）

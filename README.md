@@ -342,7 +342,7 @@ help / exit
 
 日志文件路径：`<workspace>/.pipeline_runs/<pipeline_id>/<instance_id>/run.log`
 
-> **Tab 补全**：按 Tab 可补全命令名、pipeline ID（已 `load` 的）、instance ID（已启动的 pipeline 实例，旁注 `pipeline=<pid> | status=<status>`）、`--step`/`--task` 参数值，以及 `load`/`fix --output`/`fix --input`/`log` 的文件路径与 flag。
+> **Tab 补全**：按 Tab 可补全命令名、pipeline ID（已 `load` 的）、instance ID（当前会话已启动的实例，旁注 `pipeline=<pid> | status=<status>`，**按时间戳倒序排列，最新在前**）、`--step`/`--task` 参数值（`start`/`inspect` 已输入 `--step X` 时，`--task` 仅列 X 内的任务，无 `step_id/` 前缀）、以及 `load`/`fix --output`/`fix --input` 的文件路径与全部 flag（含 `log --tail`/`--offset`）。
 
 ---
 
