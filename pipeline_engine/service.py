@@ -210,13 +210,20 @@ class PipelineService:
         ref: str,
         *,
         include_paused: bool = False,
+        wait: bool = True,
     ) -> dict[str, Any]:
-        """恢复 run 并阻塞到完成。返回 ``{"resumed", "final_status"}``。"""
+        """恢复 run。
+
+        ``wait=True``（默认，CLI 路径）阻塞到完成并返回 ``final_status``。
+        ``wait=False``（REST 202 路径）立即返回，调用方通过 GET /runs/{id} 或 SSE 跟踪进度。
+        """
         run_id = await self._rm.resume(ref, include_paused=include_paused)
-        run_ctx = await self._rm._get_ctx(run_id)
-        await run_ctx.await_main()
-        state = await self._rm.get_run_state(run_id)
-        return {"resumed": run_id, "final_status": state.status.value}
+        if wait:
+            run_ctx = await self._rm._get_ctx(run_id)
+            await run_ctx.await_main()
+            state = await self._rm.get_run_state(run_id)
+            return {"resumed": run_id, "final_status": state.status.value}
+        return {"resumed": run_id}
 
     # ── fix ───────────────────────────────────────────────────────────────────
 

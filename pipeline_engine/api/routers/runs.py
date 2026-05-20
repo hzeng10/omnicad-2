@@ -98,9 +98,9 @@ async def resume(
             f"run '{run_id}' is in terminal state '{state.status.value}'; cannot resume",
             pipeline_id=state.pipeline_id,
         )
-    # Resume blocks until completion; that's the same as CLI --wait
-    result = await svc.cmd_resume(run_id, include_paused=include_paused)
-    return envelope_ok("resume", **result)
+    # REST: fire-and-forget like POST /runs; client polls GET /runs/{id} or subscribes to SSE
+    result = await svc.cmd_resume(run_id, include_paused=include_paused, wait=False)
+    return JSONResponse(status_code=202, content=envelope_ok("resume", **result))
 
 
 # ── fix ───────────────────────────────────────────────────────────────────────

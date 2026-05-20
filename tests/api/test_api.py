@@ -246,3 +246,56 @@ async def test_resume_terminal_run_blocked(client):
     assert body["ok"] is False
 
 
+async def test_resume_returns_202_immediately(client):
+    """POST :resume must return 202 without waiting for the run to complete (H2)."""
+    import asyncio
+    ac, svc, tmp = client
+    yaml_path = make_pipeline_yaml(tmp, "h2_pipe_a")
+    await ac.post("/pipelines", json={"paths": [str(yaml_path)]})
+    start_resp = await ac.post("/runs", json={"pipeline_ids": ["h2_pipe_a"]})
+    run_id = start_resp.json()["runs"][0]["run_id"]
+
+    # Stop the run so it's resumable
+    await ac.post(f"/runs/{run_id}:stop")
+    ctx = svc.rm._runs[run_id]
+    await ctx.main_task
+
+    resp = await ac.post(f"/runs/{run_id}:resume")
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["resumed"] == run_id
+    # wait=False path: final_status is not included (run may still be in progress)
+    assert "final_status" not in body
+
+    # cleanup
+    await svc.rm._runs[run_id].main_task
+
+
+async def test_resumed_run_actually_continues(client):
+    """After a 202 resume, the run must eventually reach a terminal state."""
+    import asyncio
+    ac, svc, tmp = client
+    yaml_path = make_pipeline_yaml(tmp, "h2_pipe_b")
+    await ac.post("/pipelines", json={"paths": [str(yaml_path)]})
+    start_resp = await ac.post("/runs", json={"pipeline_ids": ["h2_pipe_b"]})
+    run_id = start_resp.json()["runs"][0]["run_id"]
+
+    # Stop the run, wait for it to reach paused/failed
+    await ac.post(f"/runs/{run_id}:stop")
+    ctx = svc.rm._runs[run_id]
+    await ctx.main_task
+
+    # Resume (202) and then wait for the new main_task to complete
+    resp = await ac.post(f"/runs/{run_id}:resume")
+    assert resp.status_code == 202
+
+    ctx2 = svc.rm._runs[run_id]
+    await ctx2.main_task
+
+    # Verify the run reached a terminal state
+    status_resp = await ac.get(f"/runs/{run_id}")
+    final_status = status_resp.json()["state"]["status"]
+    assert final_status in ("success", "failed", "paused")
+
+
