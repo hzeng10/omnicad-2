@@ -154,7 +154,7 @@ async def _run_repl_basic(
 
 async def _bootstrap_repl(svc: "PipelineService") -> None:
     """Bootstrap the REPL: reload registry from disk and autoload pipelines."""
-    await svc.bootstrap(restore_runs=True, restore_writeback=False)
+    await svc.bootstrap(restore_runs=False, restore_writeback=False)
 
 
 async def _dispatch(svc: "PipelineService", raw: str) -> None:

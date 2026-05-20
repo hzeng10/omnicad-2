@@ -204,3 +204,30 @@ async def test_start_via_service(tmp_path):
     await rm.load(yaml_p)
     await _dispatch(_make_svc(rm), "start rp12")
     assert len(rm._runs) == 1
+
+
+# ─── Bug fix: REPL must not restore run instances from previous sessions ───────
+
+async def test_repl_bootstrap_does_not_restore_old_runs(tmp_path):
+    """REPL bootstrap (restore_runs=False) must not expose runs from prior sessions."""
+    from pipeline_engine.core import storage
+    from pipeline_engine.core.run_manager import RunManager as RM
+    from pipeline_engine.models.runtime_state import PipelineRunState, Status
+    from pipeline_engine.service import PipelineService
+
+    # Simulate a completed run written to disk by a previous CLI session
+    pid = "old_pipe"
+    run_id = f"{pid}_20260520-000000_0001"
+    run_dir = storage.get_run_dir(tmp_path, pid, run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    storage.persist_state(PipelineRunState(
+        pipeline_id=pid, run_id=run_id, workspace=str(run_dir), status=Status.SUCCESS
+    ))
+
+    rm = RM(tmp_path)
+    svc = PipelineService(rm, no_autoload=True)
+    await svc.bootstrap(restore_runs=False, restore_writeback=False)
+
+    assert run_id not in rm._runs
+    instances = await rm.list_instances()
+    assert not any(i["instance_id"] == run_id for i in instances)
