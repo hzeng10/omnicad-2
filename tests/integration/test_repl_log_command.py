@@ -13,6 +13,11 @@ from pipeline_engine.core.run_logger import RunLogger, _run_id_var
 from pipeline_engine.repl import _dispatch
 
 
+def _make_svc(rm: RunManager):
+    from pipeline_engine.service import PipelineService
+    return PipelineService(rm, no_autoload=True)
+
+
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _make_run_context(tmp_path: Path, run_id: str) -> "RunManager":
@@ -52,7 +57,7 @@ def _write_sample_log(tmp_path: Path, pipeline_id: str, run_id: str) -> Path:
 
 
 async def _run_cmd(rm: RunManager, cmd: str) -> None:
-    await _dispatch(rm, cmd)
+    await _dispatch(_make_svc(rm), cmd)
 
 
 # ─── basic log display ────────────────────────────────────────────────────────

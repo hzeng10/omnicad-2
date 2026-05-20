@@ -17,7 +17,7 @@ import json
 import re
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich import box
 from rich.console import Console
@@ -28,6 +28,9 @@ from pipeline_engine.core import storage
 from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.core.run_manager import RunManager
 from pipeline_engine.models.runtime_state import PipelineRunState, Status
+
+if TYPE_CHECKING:
+    from pipeline_engine.service import PipelineService
 
 # 日志行中第二列级别的正则（格式：<timestamp>  LEVEL  [ctx]  msg）
 _LOG_LEVEL_RE = re.compile(r"^\S+\s+(\w+)\s+")
@@ -81,21 +84,11 @@ async def run_repl(
         await _run_repl_basic(workspace, pipelines_dir=pipelines_dir, no_autoload=no_autoload)
         return
 
+    from pipeline_engine.service import PipelineService
     rm = RunManager(workspace)
-
-    # ── Autoload 启动时发现 pipelines ───────────────────────────────────────
-    if not no_autoload:
-        from pipeline_engine.service import autoload_pipelines
-        base_dir = pipelines_dir if pipelines_dir is not None else (workspace / "pipelines")
-        results = await autoload_pipelines(rm, base_dir)
-        loaded_ok = [r for r in results if r["ok"]]
-        loaded_fail = [r for r in results if not r["ok"]]
-        if loaded_ok:
-            console.print(
-                f"[dim]Autoload: 已加载 {len(loaded_ok)} 个 pipeline"
-                + (f"，{len(loaded_fail)} 个失败" if loaded_fail else "")
-                + "[/dim]"
-            )
+    base_dir = pipelines_dir if pipelines_dir is not None else Path.cwd() / "pipelines"
+    svc = PipelineService(rm, pipelines_dir=base_dir, no_autoload=no_autoload)
+    await _bootstrap_repl(svc)
 
     session: PromptSession = PromptSession(
         history=InMemoryHistory(),
@@ -119,7 +112,7 @@ async def run_repl(
             continue
 
         try:
-            await _dispatch(rm, raw)
+            await _dispatch(svc, raw)
         except SystemExit:
             break
         except PipelineError as e:
@@ -136,11 +129,11 @@ async def _run_repl_basic(
     no_autoload: bool = False,
 ) -> None:
     """无 prompt_toolkit 时的简化 REPL（无历史/补全）。"""
+    from pipeline_engine.service import PipelineService
     rm = RunManager(workspace)
-    if not no_autoload:
-        from pipeline_engine.service import autoload_pipelines
-        base_dir = pipelines_dir if pipelines_dir is not None else (workspace / "pipelines")
-        await autoload_pipelines(rm, base_dir)
+    base_dir = pipelines_dir if pipelines_dir is not None else Path.cwd() / "pipelines"
+    svc = PipelineService(rm, pipelines_dir=base_dir, no_autoload=no_autoload)
+    await _bootstrap_repl(svc)
     console.print("[bold green]Pipeline REPL（基础模式）[/bold green]")
     while True:
         try:
@@ -150,7 +143,7 @@ async def _run_repl_basic(
         if not raw:
             continue
         try:
-            await _dispatch(rm, raw)
+            await _dispatch(svc, raw)
         except SystemExit:
             break
         except PipelineError as e:
@@ -159,8 +152,14 @@ async def _run_repl_basic(
 
 # ─── 命令分发 ─────────────────────────────────────────────────────────────────
 
-async def _dispatch(rm: RunManager, raw: str) -> None:
+async def _bootstrap_repl(svc: "PipelineService") -> None:
+    """Bootstrap the REPL: reload registry from disk and autoload pipelines."""
+    await svc.bootstrap(restore_runs=True, restore_writeback=False)
+
+
+async def _dispatch(svc: "PipelineService", raw: str) -> None:
     """解析并分发单条命令。"""
+    rm = svc.rm  # direct RunManager access for list/load rendering
     try:
         argv = shlex.split(raw)
     except ValueError as e:
@@ -178,7 +177,7 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
 
         case "exit" | "quit":
             # 退出前提示仍有活跃 run
-            active = [ctx for ctx in rm._runs.values() if ctx.is_active()]
+            active = [r for r in rm.list_runs() if r["active"]]
             if active:
                 console.print(
                     f"[yellow]警告:[/yellow] {len(active)} 个 run 仍在运行，"
@@ -190,9 +189,12 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
             if not args:
                 console.print("[yellow]用法:[/yellow] load <path> [<path>...]")
                 return
-            for p in args:
-                pid = await rm.load(p)
-                console.print(f"[green]已加载:[/green] {pid}")
+            result = await svc.cmd_load([Path(p) for p in args])
+            for item in result["loaded"]:
+                if item["ok"]:
+                    console.print(f"[green]已加载:[/green] {item['pipeline_id']}")
+                else:
+                    console.print(f"[red]加载失败:[/red] {item['path']}: {item.get('error', '')}")
 
         case "list":
             flags = set(args)
@@ -202,25 +204,25 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
                 _print_pipelines(rm)
 
         case "start":
-            await _cmd_start(rm, args)
+            await _cmd_start(svc, args)
 
         case "stop":
-            await _cmd_stop(rm, args)
+            await _cmd_stop(svc, args)
 
         case "resume":
-            await _cmd_resume(rm, args)
+            await _cmd_resume(svc, args)
 
         case "status":
-            await _cmd_status(rm, args)
+            await _cmd_status(svc, args)
 
         case "inspect":
-            await _cmd_inspect(rm, args)
+            await _cmd_inspect(svc, args)
 
         case "fix":
-            await _cmd_fix(rm, args)
+            await _cmd_fix(svc, args)
 
         case "log":
-            await _cmd_log(rm, args)
+            await _cmd_log(svc, args)
 
         case "clear":
             console.clear()
@@ -231,7 +233,7 @@ async def _dispatch(rm: RunManager, raw: str) -> None:
 
 # ─── 各命令处理函数 ───────────────────────────────────────────────────────────
 
-async def _cmd_start(rm: RunManager, args: list[str]) -> None:
+async def _cmd_start(svc: "PipelineService", args: list[str]) -> None:
     """start 命令处理器：支持多个 pipeline_id，行为与 CLI start 子命令一致。"""
     if not args:
         console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
@@ -247,36 +249,37 @@ async def _cmd_start(rm: RunManager, args: list[str]) -> None:
         console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
         return
 
-    for pipeline_id in pipeline_ids:
-        try:
-            run_id = await rm.start_run(pipeline_id, step_id=step_id, task_id=task_id)
-            console.print(f"[green]已启动:[/green] {run_id}  (pipeline: {pipeline_id})")
-        except PipelineError as e:
-            console.print(f"[red]错误:[/red] pipeline '{pipeline_id}' 启动失败: {e}")
+    result = await svc.cmd_start(pipeline_ids, step=step_id, task=task_id, wait=False)
+    for r in result["runs"]:
+        if r["ok"]:
+            console.print(f"[green]已启动:[/green] {r['run_id']}  (pipeline: {r['pipeline_id']})")
+        else:
+            console.print(f"[red]错误:[/red] pipeline '{r['pipeline_id']}' 启动失败: {r.get('error', '')}")
 
 
-async def _cmd_stop(rm: RunManager, args: list[str]) -> None:
+async def _cmd_stop(svc: "PipelineService", args: list[str]) -> None:
     if not args:
         console.print("[yellow]用法:[/yellow] stop <instance_id>")
         return
     ref = args[0]
-    await rm.stop(ref)
+    await svc.cmd_stop(ref)
     console.print(f"[yellow]已中止:[/yellow] {ref}")
 
 
-async def _cmd_resume(rm: RunManager, args: list[str]) -> None:
+async def _cmd_resume(svc: "PipelineService", args: list[str]) -> None:
     if not args:
         console.print("[yellow]用法:[/yellow] resume <instance_id> [--include-paused]")
         return
     ref = args[0]
     include_paused = "--include-paused" in args
-    run_id = await rm.resume(ref, include_paused=include_paused)
-    console.print(f"[green]已恢复:[/green] {run_id}")
+    # Non-blocking: fire the resume task and return immediately to the REPL prompt.
+    run_id = await svc.rm.resume(ref, include_paused=include_paused)
+    console.print(f"[green]已开始恢复（运行中）:[/green] {run_id}")
 
 
-async def _cmd_status(rm: RunManager, args: list[str]) -> None:
+async def _cmd_status(svc: "PipelineService", args: list[str]) -> None:
     if "--all" in args:
-        _print_runs(rm)
+        await _print_instances(svc.rm)
         return
 
     if not args:
@@ -287,13 +290,13 @@ async def _cmd_status(rm: RunManager, args: list[str]) -> None:
     watch = "--watch" in args
 
     if watch:
-        await _watch_status(rm, ref)
+        await _watch_status(svc.rm, ref)
     else:
-        state = await rm.get_run_state(ref)
+        state = await svc.rm.get_run_state(ref)
         _render_status(state)
 
 
-async def _cmd_inspect(rm: RunManager, args: list[str]) -> None:
+async def _cmd_inspect(svc: "PipelineService", args: list[str]) -> None:
     if not args:
         console.print("[yellow]用法:[/yellow] inspect <instance_id> [--step S] [--task T]")
         return
@@ -301,11 +304,11 @@ async def _cmd_inspect(rm: RunManager, args: list[str]) -> None:
     rest = args[1:]
     step_id = _get_flag(rest, "--step")
     task_id = _get_flag(rest, "--task")
-    state = await rm.get_run_state(ref)
+    state = await svc.rm.get_run_state(ref)
     _render_inspect(state, step_id, task_id)
 
 
-async def _cmd_fix(rm: RunManager, args: list[str]) -> None:
+async def _cmd_fix(svc: "PipelineService", args: list[str]) -> None:
     if len(args) < 1:
         console.print("[yellow]用法:[/yellow] fix <instance_id> --task T --output PATH  |  --input PATH")
         return
@@ -322,8 +325,13 @@ async def _cmd_fix(rm: RunManager, args: list[str]) -> None:
         console.print("[red]错误:[/red] fix 需要 --output 或 --input 参数")
         return
 
-    await rm.fix(ref, task_locator, input_path=input_path, output_path=output_path)
-    if output_path:
+    result = await svc.cmd_fix(
+        ref,
+        task_locator,
+        output_path=Path(output_path) if output_path else None,
+        input_path=Path(input_path) if input_path else None,
+    )
+    if result["mode"] == "output":
         console.print(f"[green]修复成功 (output):[/green] task '{task_locator}' → FIXED")
     else:
         console.print(f"[green]修复成功 (input):[/green] task '{task_locator}' 输入已更新 → NEW")
@@ -385,7 +393,7 @@ def _render_status(state: PipelineRunState) -> None:
 
 async def _watch_status(rm: RunManager, ref: str, refresh: float = 0.5) -> None:
     """持续刷新状态表格直到 run 结束（Live 模式）。"""
-    ctx = rm._resolve_run(ref)
+    ctx = await rm._get_ctx(ref)
 
     with Live(console=console, refresh_per_second=int(1 / refresh)) as live:
         while True:
@@ -493,7 +501,7 @@ def _render_task_detail(task_id: str, ts) -> None:
             console.print("\n".join(view.log_tail))
 
 
-async def _cmd_log(rm: RunManager, args: list[str]) -> None:
+async def _cmd_log(svc: "PipelineService", args: list[str]) -> None:
     """log 命令：分页显示指定 instance 的 run.log，ERROR 行高亮红色。"""
     if not args:
         console.print(
@@ -508,7 +516,7 @@ async def _cmd_log(rm: RunManager, args: list[str]) -> None:
     try:
         tail_str = _get_flag(rest, "--tail")
         offset_str = _get_flag(rest, "--offset")
-        tail = int(tail_str) if tail_str else 100
+        tail = int(tail_str) if tail_str else 200
         offset = int(offset_str) if offset_str else 0
     except ValueError:
         console.print("[red]错误:[/red] --tail / --offset 必须为整数")
@@ -517,32 +525,19 @@ async def _cmd_log(rm: RunManager, args: list[str]) -> None:
     show_all = "--all" in rest
     errors_only = "--errors-only" in rest
 
-    ctx = rm._resolve_run(ref)
-    log_path = storage.get_run_log_path(rm.workspace, ctx.pipeline_id, ctx.run_id)
-    if not log_path.exists():
-        console.print(f"[dim]日志文件尚未生成: {log_path}[/dim]")
+    result = await svc.cmd_log(
+        ref, tail=tail, offset=offset, all_lines=show_all, errors_only=errors_only
+    )
+    if result["total"] == 0:
+        console.print(f"[dim]日志文件尚未生成: {result['log_path']}[/dim]")
         return
 
-    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-
-    if errors_only:
-        lines = [ln for ln in lines if " ERROR " in ln]
-
-    total = len(lines)
-    if show_all:
-        start, end = 0, total
-        view = lines
-    else:
-        end = max(0, total - offset)
-        start = max(0, end - tail)
-        view = lines[start:end]
-
     console.print(
-        f"[dim]日志: {log_path}  共 {total} 行  "
-        f"显示第 {start + 1}–{end} 行[/dim]"
+        f"[dim]日志: {result['log_path']}  共 {result['total']} 行  "
+        f"显示第 {result['start'] + 1}–{result['end']} 行[/dim]"
     )
-    for line in view:
-        _render_log_line(line)
+    for line_dict in result["lines"]:
+        _render_log_line(line_dict["raw"])
 
 
 def _render_log_line(line: str) -> None:

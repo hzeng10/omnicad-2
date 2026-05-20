@@ -213,7 +213,7 @@ class PipelineService:
     ) -> dict[str, Any]:
         """恢复 run 并阻塞到完成。返回 ``{"resumed", "final_status"}``。"""
         run_id = await self._rm.resume(ref, include_paused=include_paused)
-        run_ctx = self._rm._runs[run_id]
+        run_ctx = await self._rm._get_ctx(run_id)
         await run_ctx.await_main()
         state = await self._rm.get_run_state(run_id)
         return {"resumed": run_id, "final_status": state.status.value}
@@ -321,7 +321,7 @@ class PipelineService:
         from pipeline_engine.core import storage
         from pipeline_engine.cli_json import parse_log_line
 
-        ctx = self._rm._resolve_run(ref)
+        ctx = await self._rm._get_ctx(ref)
         log_path = storage.get_run_log_path(
             self._rm.workspace, ctx.pipeline_id, ctx.run_id
         )

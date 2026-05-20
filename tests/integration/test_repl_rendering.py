@@ -24,6 +24,11 @@ from pipeline_engine.repl import (
 )
 
 
+def _make_svc(rm: RunManager):
+    from pipeline_engine.service import PipelineService
+    return PipelineService(rm, no_autoload=True)
+
+
 class QuickTask(BaseTask):
     async def execute(self, inputs, progress):
         await progress(100)
@@ -180,7 +185,7 @@ def test_print_runs_with_active(tmp_path):
 async def test_dispatch_bad_shlex(tmp_path):
     rm = RunManager(tmp_path)
     # Unmatched quote — should not raise
-    await _dispatch(rm, "start 'unmatched")
+    await _dispatch(_make_svc(rm), "start 'unmatched")
 
 
 async def test_dispatch_resume_command(tmp_path):
@@ -191,7 +196,7 @@ async def test_dispatch_resume_command(tmp_path):
     ctx = rm._runs[run_id]
     await ctx.main_task  # complete first
 
-    await _dispatch(rm, f"resume {run_id}")
+    await _dispatch(_make_svc(rm), f"resume {run_id}")
     ctx2 = rm._runs[run_id]
     await ctx2.main_task
 
@@ -204,14 +209,14 @@ async def test_dispatch_resume_include_paused(tmp_path):
     ctx = rm._runs[run_id]
     await ctx.main_task
 
-    await _dispatch(rm, f"resume {run_id} --include-paused")
+    await _dispatch(_make_svc(rm), f"resume {run_id} --include-paused")
     ctx2 = rm._runs[run_id]
     await ctx2.main_task
 
 
 async def test_dispatch_status_all(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "status --all")
+    await _dispatch(_make_svc(rm), "status --all")
 
 
 async def test_dispatch_fix_missing_task_flag(tmp_path):
@@ -219,7 +224,7 @@ async def test_dispatch_fix_missing_task_flag(tmp_path):
     yaml_p = _write_yaml(tmp_path, "fix_err_pipe")
     await rm.load(yaml_p)
     # Fix without --task should print error
-    await _dispatch(rm, "fix some_ref --output /tmp/x.json")
+    await _dispatch(_make_svc(rm), "fix some_ref --output /tmp/x.json")
 
 
 async def test_dispatch_fix_no_path_flag(tmp_path):
@@ -229,37 +234,37 @@ async def test_dispatch_fix_no_path_flag(tmp_path):
     run_id = await rm.start_run("fix_np_pipe")
     ctx = rm._runs[run_id]
     await ctx.main_task
-    await _dispatch(rm, f"fix {run_id} --task t1")  # no --output or --input
+    await _dispatch(_make_svc(rm), f"fix {run_id} --task t1")  # no --output or --input
 
 
 async def test_dispatch_stop_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "stop")
+    await _dispatch(_make_svc(rm), "stop")
 
 
 async def test_dispatch_resume_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "resume")
+    await _dispatch(_make_svc(rm), "resume")
 
 
 async def test_dispatch_status_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "status")
+    await _dispatch(_make_svc(rm), "status")
 
 
 async def test_dispatch_inspect_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "inspect")
+    await _dispatch(_make_svc(rm), "inspect")
 
 
 async def test_dispatch_fix_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "fix")
+    await _dispatch(_make_svc(rm), "fix")
 
 
 async def test_dispatch_run_no_args(tmp_path):
     rm = RunManager(tmp_path)
-    await _dispatch(rm, "start")
+    await _dispatch(_make_svc(rm), "start")
 
 
 async def test_run_manager_list_runs_with_entries(tmp_path):

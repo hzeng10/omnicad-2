@@ -120,8 +120,18 @@ class AsyncScheduler:
         if self._run_logger:
             self._run_logger.attach()
         try:
+            await self._sm.start_pipeline()
             step_spec = self._get_step(step_id)
             await self._run_step(step_spec)
+            run_state = await self._sm.get_run_state()
+            step_state = run_state.steps.get(step_id)
+            all_ok = step_state is not None and step_state.status in (
+                Status.SUCCESS, Status.FIXED, Status.SKIPPED
+            )
+            await self._sm.finish_pipeline(success=all_ok)
+        except Exception:
+            await self._sm.finish_pipeline(success=False)
+            raise
         finally:
             if self._run_logger:
                 self._run_logger.detach()
@@ -131,6 +141,7 @@ class AsyncScheduler:
         if self._run_logger:
             self._run_logger.attach()
         try:
+            await self._sm.start_pipeline()
             step_spec = self._get_step(step_id)
             task_spec = next((t for t in step_spec.tasks if t.id == task_id), None)
             if task_spec is None:
@@ -141,6 +152,17 @@ class AsyncScheduler:
                 )
             await self._sm.init_step(step_id, [task_id])
             await self._dispatch_task(step_spec, task_spec)
+            run_state = await self._sm.get_run_state()
+            step_state = run_state.steps.get(step_id)
+            task_ok = (
+                step_state is not None
+                and task_id in step_state.tasks
+                and step_state.tasks[task_id].status in (Status.SUCCESS, Status.FIXED)
+            )
+            await self._sm.finish_pipeline(success=task_ok)
+        except Exception:
+            await self._sm.finish_pipeline(success=False)
+            raise
         finally:
             if self._run_logger:
                 self._run_logger.detach()

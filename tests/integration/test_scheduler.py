@@ -253,3 +253,51 @@ async def test_within_step_output_injected(tmp_path):
     out = storage.load_task_output(tmp_path, "test_pipe", "run1", "s1", "consumer")
     assert "producer" in out["inputs_received"]
     assert out["inputs_received"]["producer"]["done"] is True
+
+
+# ─── P1: run_step / run_task pipeline status ──────────────────────────────────
+
+def _single_step_spec(plugin: str) -> PipelineSpec:
+    return PipelineSpec(
+        version="1.0",
+        pipeline=PipelineMeta(id="test_pipe", name="T", type="测试"),
+        steps=[StepSpec(id="step_a", tasks=[TaskSpec(id="t1", plugin=plugin)])],
+    )
+
+
+async def test_run_step_pipeline_status_success(tmp_path):
+    """run_step() must advance pipeline from NEW → RUNNING → SUCCESS (not stay NEW)."""
+    spec = _single_step_spec(f"{__name__}.InstantTask")
+    sched, sm = _make_scheduler(spec, tmp_path)
+    await sched.run_step("step_a")
+    state = await sm.get_run_state()
+    assert state.status == Status.SUCCESS
+
+
+async def test_run_step_pipeline_status_failed_on_task_error(tmp_path):
+    """If the step's task fails, run_step() must mark pipeline FAILED (not stay NEW)."""
+    spec = _single_step_spec(f"{__name__}.FailTask")
+    sched, sm = _make_scheduler(spec, tmp_path)
+    # Task failures are caught internally; run_step() itself does not raise.
+    await sched.run_step("step_a")
+    state = await sm.get_run_state()
+    assert state.status == Status.FAILED
+
+
+async def test_run_task_pipeline_status_success(tmp_path):
+    """run_task() must advance pipeline from NEW → RUNNING → SUCCESS (not stay NEW)."""
+    spec = _single_step_spec(f"{__name__}.InstantTask")
+    sched, sm = _make_scheduler(spec, tmp_path)
+    await sched.run_task("step_a", "t1")
+    state = await sm.get_run_state()
+    assert state.status == Status.SUCCESS
+
+
+async def test_run_task_pipeline_status_failed_on_task_error(tmp_path):
+    """If the dispatched task fails, run_task() must mark pipeline FAILED (not stay NEW)."""
+    spec = _single_step_spec(f"{__name__}.FailTask")
+    sched, sm = _make_scheduler(spec, tmp_path)
+    # Task failures are caught internally; run_task() itself does not raise.
+    await sched.run_task("step_a", "t1")
+    state = await sm.get_run_state()
+    assert state.status == Status.FAILED
