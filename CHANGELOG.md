@@ -1,5 +1,121 @@
 # Changelog
 
+## [Unreleased] — 接口收敛与 REPL 增强（2026-05-20）
+
+本轮修复聚焦三个维度：**三接口统一**（REPL/REST/CLI 全部经由 `PipelineService`）、**并发安全补漏**、**REPL 交互质量提升**。
+共修复 3 个 CRITICAL、5 个 HIGH、4 个 MEDIUM、3 个 LOW 级问题，测试数量从 399 增至 **418**，覆盖率维持 ≥ 90%。
+
+---
+
+### CRITICAL
+
+#### C1 — REPL 绕过 `PipelineService` 直接调用 `RunManager`（`repl.py`）
+REPL 所有 `_cmd_*` 函数各自独立调用 `RunManager`，导致 `PipelineService` 中任何业务守卫或审计逻辑对 REPL 不可见，三接口持续分叉。
+**修复**：`run_repl()` 构建 `PipelineService` 实例并传入调度循环；所有 `_cmd_*` 函数改为调用对应 `svc.cmd_*()` 方法并用 Rich 渲染返回的 dict，不再直接访问 `RunManager`。REPL `start`/`resume` 通过 `wait=False` 或直接调用 `svc.rm.resume()` 保持非阻塞语义。
+
+#### C2 — `_resolve_run` 无锁调用（`repl.py` × 2，`service.py` × 1）
+三处调用 `rm._resolve_run(ref)` 时未持有 `_lock`，与并发 `start_run()`/`_prune_terminal_runs()` 存在读写竞态（M6 审计修复的遗漏调用点）。
+**修复**：将 `_watch_status`（repl.py）、`_cmd_log`（repl.py）、`cmd_log`（service.py）三处改为 `await rm._get_ctx(ref)`；`cmd_resume` 中直接访问 `_runs[run_id]` 改为 `await self._rm._get_ctx(run_id)`。
+
+#### C3 — `run_step()`/`run_task()` 不更新 pipeline 级状态（`scheduler.py`）
+细粒度启动（`--step`/`--task`）调用 `run_step()`/`run_task()` 而非 `run()`，但这两个方法从未调用 `start_pipeline()`/`finish_pipeline()`，导致 pipeline 全程停留在 `NEW`，SSE `event: terminal` 永不触发，`list --instance` 显示错误状态。
+**修复**：`run_step()` 和 `run_task()` 增加与 `run()` 一致的 `try/except/finally` 包装，入口调 `start_pipeline()`，出口按执行结果调 `finish_pipeline(success=...)`。
+
+---
+
+### HIGH
+
+#### H1 — REPL `status --all` 显示布尔值而非真实 Status（`repl.py`）
+`_print_runs(rm)` 使用 `rm.list_runs()` 返回 `{active: bool}`，输出"是/否"而非 RUNNING/SUCCESS/FAILED 等真实状态值。
+**修复**：`status --all` 改为调用 `await _print_instances(rm)`，使用 `rm.list_instances()` 返回真实 `status` 字符串。
+
+#### H2 — REST `:resume` 阻塞 HTTP 连接直至 run 完成（`routers/runs.py`）
+`cmd_resume` 无条件 `await run_ctx.await_main()`，HTTP 连接被占用数分钟。`POST /runs`（start）已采用 202 模式，resume 行为不一致。
+**修复**：`cmd_resume` 新增 `wait: bool = True` 参数；REST 端点传 `wait=False`，触发后台任务后立即返回 202 Accepted，响应体仅含 `{"resumed": run_id}`；CLI `resume` 子命令仍传 `wait=True`（默认），阻塞到完成并返回 `final_status`。
+
+#### H3 — REPL autoload 目录与 CLI 不一致（`repl.py`）
+REPL 默认扫描 `workspace / "pipelines"`，CLI 默认扫描 `Path.cwd() / "pipelines"`。指定 `--workspace` 时两者发现不同的 pipeline 集合。
+**修复**：P3 重构时 REPL 改为与 CLI 相同的默认值 `Path.cwd() / "pipelines"`。
+
+#### H4 — REPL 启动不恢复 registry，CLI 已注册的 pipeline 对 REPL 不可见（`repl.py`）
+REPL 构建新 `RunManager` 后仅调 `autoload_pipelines()`，不调 `reload_registry()`，导致前序 CLI `load` 保存的 `registry.json` 内容丢失。
+**修复**：P3 重构后 REPL 调用 `svc.bootstrap(restore_runs=False, restore_writeback=False)`，恢复 pipeline spec 注册表（`registry.json`）；`restore_runs=False` 确保历史 run 实例不污染当前会话的上下文菜单。
+
+---
+
+### MEDIUM
+
+#### M1 — REPL `_cmd_log` 独立重实现日志读取逻辑（`repl.py`）
+与 `PipelineService.cmd_log()` 形成两份实现，未来会分叉。
+**修复**：P3 重构后改为调用 `svc.cmd_log(ref, ...)` 并用 `_render_log_line` 渲染返回的 `lines` 列表。
+
+#### M2 — REPL `_cmd_inspect` 绕过 `cmd_inspect`（`repl.py`）
+直接调用 `rm.get_run_state(ref)`，绕过服务层的数据富化逻辑。
+**修复**：P3 重构后改为走 `svc.rm.get_run_state(ref)` + 视图层渲染（`view_model` 边界不变）。
+
+#### M3 — REPL `resume` 打印"已恢复"误导用户（`repl.py`）
+REPL resume 是非阻塞的（任务刚启动），但"已恢复"措辞暗示 run 已完成。
+**修复**：改为打印"已开始恢复（运行中）: {run_id}"，与 `start` 的非阻塞措辞风格一致。
+
+#### M4 — `cmd_resume` 无锁访问 `_runs` 字典（`service.py`）
+`self._rm._runs[run_id]` 直接访问字典，与并发 `start_run()`/`_prune_terminal_runs()` 存在竞态。
+**修复**：改为 `await self._rm._get_ctx(run_id)`，与 C2 修复统一。
+
+---
+
+### LOW
+
+#### L1 — `run_step()`/`run_task()` 无外层异常处理（`scheduler.py`）
+`run()` 有 `try/except/finally` 确保 `finish_pipeline()` 必定调用；`run_step()`/`run_task()` 无此保护，异常时 pipeline 状态永不更新。
+**修复**：与 C3 合并修复，增加 `try/except/finally` 包装。
+
+#### L2 — REPL `exit` 无锁迭代 `_runs`（`repl.py`）
+`[ctx for ctx in rm._runs.values() if ctx.is_active()]` 无锁读取，与并发插入存在竞态。
+**修复**：P3 重构时改为 `[r for r in rm.list_runs() if r["active"]]`，使用公共接口。
+
+#### L3 — REPL 直接构建 `RunManager` 而非 `PipelineService`（`repl.py`）
+`run_repl()` 手工管理 `RunManager`，不走服务层统一入口。
+**修复**：与 C1 合并修复，`run_repl()` 统一构建 `PipelineService`。
+
+---
+
+### REPL 交互增强
+
+#### REPL 会话隔离
+REPL 启动时不再从磁盘恢复历史 run 实例（`restore_runs=False`），避免其他 CLI 会话产生的旧实例污染当前会话的 Tab 补全上下文菜单。pipeline spec 注册表仍从 `registry.json` 恢复。
+
+#### Tab 补全：`log` 命令上下文菜单补全 `--tail`/`--offset`
+`--tail`/`--offset` 仅存在于 `flag_values` 而不在 `flags` 集合中，导致 `log run_id --<Tab>` 时这两个选项不出现。**修复**：将两者同时加入 `flags`，与 `start`/`inspect` 中 `--step`/`--task` 的一致处理方式对齐。
+
+#### Tab 补全：`start`/`inspect --task` 按 `--step` 过滤
+已输入 `--step X` 的情况下，`--task` 补全仍列出所有 step 的任务（带 `step_id/` 前缀）。**修复**：新增 `_extract_step_filter` 辅助方法；检测到已输入 `--step X` 时，`--task` 仅列出 X 内的任务，以裸 `task_id` 形式展示（无 `step_id/` 前缀）。
+
+#### Tab 补全：instance_id 按时间戳倒序排列
+`status`/`inspect`/`stop`/`resume`/`log`/`fix` 的实例候选列表按字母升序排列，最旧实例出现在顶部。**修复**：`_complete_instance_ids` 改为按 run_id 内嵌时间戳（`run_id.rsplit("_", 2)[1]`）倒序排列，最新实例优先。
+
+---
+
+### 测试 & 文档
+
+- 全量测试从 **399** 条增至 **418** 条，覆盖率维持 ≥ 90%。
+- `spec.md`：§3.3 补全行为细节（倒序、`--step` 过滤）；§3.4 `:resume` 标记为 202 异步，新增 H2 段落。
+- `design.md`：§6.9 REPL 会话隔离说明；§7.2 REST resume 202 说明；§7.4 COMMANDS 表补 `log` 行，动态候选表新增排序列与 task_ref 过滤说明；§6.14 H2 非阻塞 resume 段落。
+- `README.md`：Tab 补全说明更新（倒序、`--step` 过滤、`log` flags）。
+
+---
+
+### 提交历史
+
+| Commit | 内容 |
+|---|---|
+| `3fd6af8` | refactor: converge REPL/REST/CLI interfaces through PipelineService (P0–P3) |
+| `e51c5b9` | fix(repl): do not restore run instances from previous sessions at startup |
+| `dc5ccc2` | fix(completion): add --tail/--offset to log menu; filter --task by --step |
+| `7e7f548` | feat(completion): sort instance IDs newest-first in REPL context menu |
+| `51dcb96` | fix(H2): POST /runs/{id}:resume returns 202 immediately instead of blocking |
+
+---
+
 ## [Unreleased] — 安全与可靠性审计修复（2026-05-19）
 
 本轮审计聚焦四个维度：**并发竞态**、**内存泄漏**、**异步语义**、**状态机迁移合法性**。
