@@ -54,6 +54,8 @@ class AsyncScheduler:
         self._abort_event = abort_event
         self._global_sem = global_semaphore
         self._run_logger = run_logger
+        # Per-path locks for MIRROR / accumulate writes (run-scoped; one lock per resolved path)
+        self._path_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def _pipeline_id(self) -> str:
@@ -319,26 +321,15 @@ class AsyncScheduler:
             # Exceptions are caught below; abort_event check takes priority over fail_task
             with _log_ctx:
                 task_instance = instantiate_task(task_spec.plugin, task_id, task_spec.config)
+                # Inject run-scoped path-lock registry so tasks can use shared_json()
+                task_instance._path_locks = self._path_locks
                 validated_inputs = task_instance.validate_input(inputs)
                 output = await task_instance.execute(validated_inputs, progress_cb)
                 validated_output = task_instance.validate_output(output)
                 # 先原子写盘，再更新内存状态（保证崩溃后可从文件恢复）
                 storage.atomic_write_json(output_path, validated_output)
-                # MIRROR：将结果额外复制到用户声明的路径（写失败不阻塞 task 完成）
-                mirror_dest = storage.resolve_output_path(self._workspace, task_spec.output)
-                if mirror_dest is not None:
-                    try:
-                        mirror_dest.parent.mkdir(parents=True, exist_ok=True)
-                        storage.atomic_write_json(mirror_dest, validated_output)
-                        if self._run_logger:
-                            self._run_logger.info(
-                                "task output mirrored: %s → %s", task_id, mirror_dest
-                            )
-                    except OSError as exc:
-                        if self._run_logger:
-                            self._run_logger.warning(
-                                "task output mirror failed: %s (%s)", mirror_dest, exc
-                            )
+                # MIRROR / ACCUMULATE：写入用户声明路径（写失败不阻塞 task 完成）
+                await self._do_mirror_write(task_id, task_spec, validated_output)
             await self._sm.finish_task(
                 step_id,
                 task_id,
@@ -363,9 +354,47 @@ class AsyncScheduler:
             await self._sm.fail_task(step_id, task_id, error=error_msg, exc=exc)
             logger.error("Task %s/%s failed: %s", step_id, task_id, error_msg)
 
+    # ─── MIRROR / ACCUMULATE 写入 ─────────────────────────────────────────────
+
+    async def _do_mirror_write(
+        self, task_id: str, task_spec: Any, validated_output: dict[str, Any]
+    ) -> None:
+        """将 task 结果写入用户声明的 output 路径（MIRROR 或 ACCUMULATE 模式）。
+
+        MIRROR（overwrite，默认）：整体覆写用户路径，与原有行为相同。
+        ACCUMULATE：以 per-path asyncio.Lock 序列化并发写入，将各 task 结果
+        按 task_id 为 key 合并到共享 JSON 文件中（{task_id: output, ...}）。
+        写失败降级为 WARNING，不阻塞 task 完成。
+        """
+        dest = storage.resolve_output_path(self._workspace, task_spec.output)
+        if dest is None:
+            return
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            lock = self._path_locks.setdefault(str(dest.resolve()), asyncio.Lock())
+            async with lock:
+                if task_spec.output_mode == "accumulate":
+                    existing = storage.load_json_safe(dest) or {}
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    existing[task_id] = validated_output
+                    storage.atomic_write_json(dest, existing)
+                else:
+                    storage.atomic_write_json(dest, validated_output)
+            if self._run_logger:
+                mode = task_spec.output_mode
+                self._run_logger.info(
+                    "task output %s: %s → %s", mode, task_id, dest
+                )
+        except OSError as exc:
+            if self._run_logger:
+                self._run_logger.warning(
+                    "task output mirror failed: %s (%s)", dest, exc
+                )
+
     # ─── 输入组装 ────────────────────────────────────────────────────────────
 
-    async def _build_inputs(self, step: "StepSpec", task_spec) -> dict[str, Any]:
+    async def _build_inputs(self, step: "StepSpec", task_spec: Any) -> dict[str, Any]:
         """合并静态 inputs + step 内依赖输出 + 跨 step 依赖输出。"""
         inputs: dict[str, Any] = dict(task_spec.inputs)
 

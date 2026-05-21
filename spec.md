@@ -10,7 +10,7 @@
 ### 2.1 任务插件化系统 (Task Plugin System)
 *   **统一接口**: 所有任务必须继承 `BaseTask` 抽象基类。
 *   **动态加载**: 支持在 YAML 中通过类路径（如 `module.TaskClass`）指定执行器，引擎需在运行时动态实例化。
-*   **数据契约**: 任务间通过 `input.json` 和 `output.json` 传递数据，需保证相同类型任务的 Schema 一致性。Task 可通过 `output: PATH` 在 YAML 中声明结果 JSON 的对外落盘位置（可选，MIRROR 语义：内部路径不变，额外写一份副本）。
+*   **数据契约**: 任务间通过 `input.json` 和 `output.json` 传递数据，需保证相同类型任务的 Schema 一致性。Task 可通过 `output: PATH` 在 YAML 中声明结果 JSON 的对外落盘位置（可选）；通过 `output_mode` 控制写入语义（见 §2.2 并行共享输出）。
 *   **自动加载（默认）**: CLI 启动时（REPL 与子命令均适用）自动扫描 `./pipelines/*/pipeline.yaml`（一级深度）并注册，等价于逐一调用 `load` 命令。可通过 `--pipelines-dir DIR`（或 env `PIPELINE_AUTOLOAD_DIR`）改变目录，`--no-autoload`（或 env `PIPELINE_NO_AUTOLOAD`）禁用。单个 YAML 解析失败时跳过并写 WARNING 到 stderr，不阻断其余文件或子命令本身。
 
 ### 2.2 多层级执行控制 (Granular Execution)
@@ -29,6 +29,18 @@
     *   同步骤内，无依赖关系的多个任务必须支持并行执行。
     *   基于拓扑排序自动管理执行顺序。
 *   **数据流向**: 下游任务可引用上游任务生成的 JSON 数据作为输入。
+*   **并行共享输出（Shared Output）**：同一 Step 内的多个并行 Task 可安全地将结果合并写入同一个 JSON 文件。通过 `output_mode` 字段控制：
+
+    | `output_mode` | 语义 | 适用场景 |
+    |---|---|---|
+    | `overwrite`（默认） | 整体覆写目标文件（MIRROR）；单 task 独占路径的标准用法 | 每个 task 有独立输出文件 |
+    | `accumulate` | 以 `task_id` 为 key 累积合并到共享文件：`{task_id: output, ...}` | 多个并行 task 共享同一输出路径 |
+
+    **安全保障**：
+    - 同一 Step 内若多个 Task 声明相同 `output:` 路径，但未设置 `output_mode: accumulate`，YAML 加载时立即报 `ValidationError`（防止静默数据丢失）。
+    - 所有到同一路径的 accumulate 写入由 per-path `asyncio.Lock` 序列化，防止并发读改写竞争（TOCTOU）。
+
+    **任务代码中的直接写入**：async task（`execute()`）可调用 `async with self.shared_json(path) as data:` 对共享 JSON 文件执行安全的读改写。该 API 使用与 MIRROR 写入相同的 per-path 锁注册表，确保引擎写入和任务直接写入不互相竞争。
 
 
 ### 2.3 状态管理与干预 (Lifecycle & Intervention)

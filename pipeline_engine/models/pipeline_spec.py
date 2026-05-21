@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -63,6 +63,7 @@ class TaskSpec(BaseModel):
     config: dict[str, Any] = {}
     inputs: dict[str, Any] = {}
     output: str | None = None
+    output_mode: Literal["overwrite", "accumulate"] = "overwrite"
 
     @field_validator("id")
     @classmethod
@@ -124,6 +125,32 @@ class StepSpec(BaseModel):
             if task.id in seen:
                 raise ValueError(f"step '{self.id}' 中存在重复的 task id '{task.id}'")
             seen.add(task.id)
+        return self
+
+    @model_validator(mode="after")
+    def check_shared_output_paths(self) -> "StepSpec":
+        """多个 task 共享同一 output 路径时，所有相关 task 必须声明 output_mode: accumulate。
+
+        若两个 task 声明了相同的 output 路径但未明确使用 accumulate 模式，
+        最终只有最后完成的 task 的结果会保留（静默丢失），故在加载阶段即报错。
+        """
+        from collections import defaultdict
+        path_tasks: defaultdict[str, list[str]] = defaultdict(list)
+        for task in self.tasks:
+            if task.output:
+                path_tasks[task.output].append(task.id)
+        for path, ids in path_tasks.items():
+            if len(ids) > 1:
+                bad = [
+                    t.id for t in self.tasks
+                    if t.output == path and t.output_mode != "accumulate"
+                ]
+                if bad:
+                    raise ValueError(
+                        f"Tasks {bad} in step '{self.id}' share output path '{path}' "
+                        f"but don't declare output_mode: accumulate — "
+                        f"this would silently discard all but the last writer's result"
+                    )
         return self
 
 

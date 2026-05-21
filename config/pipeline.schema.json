@@ -147,6 +147,12 @@
         "output": {
           "type": "string",
           "description": "Task 成功后镜像结果 JSON 的落盘路径（可选）；相对路径相对 workspace 解析"
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": ["overwrite", "accumulate"],
+          "default": "overwrite",
+          "description": "output 路径的写入模式。overwrite（默认）：整体覆写；accumulate：以 task_id 为 key 累积合并到共享文件（{task_id: output, ...}），同一 step 内多个 task 共享 output 路径时必须声明此模式"
         }
       }
     }

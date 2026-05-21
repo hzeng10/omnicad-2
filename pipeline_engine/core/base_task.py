@@ -19,7 +19,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC
-from typing import Any, Awaitable, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Iterator
 
 from pipeline_engine.core.errors import PipelineError
 
@@ -68,6 +70,9 @@ class BaseTask(ABC):
         self.config = config
         # Child logger of pipeline_engine — routes to per-run run.log via RunLogger.
         self.logger = logging.getLogger(f"pipeline_engine.task.{task_id}")
+        # Injected by AsyncScheduler before execute(); maps resolved path → asyncio.Lock.
+        # Used by shared_json() to serialise concurrent read-modify-write to shared files.
+        self._path_locks: dict[str, asyncio.Lock] = {}
 
     async def execute(self, inputs: dict[str, Any], progress: ProgressCallback) -> dict[str, Any]:
         """默认实现：若子类重写了 run_sync，则自动委托到线程池执行。"""
@@ -82,6 +87,30 @@ class BaseTask(ABC):
     def run_sync(self, inputs: dict[str, Any], progress: Any) -> dict[str, Any]:
         """CPU 密集型 / 同步任务入口，由 execute() 通过线程池调用。"""
         raise NotImplementedError
+
+    @asynccontextmanager
+    async def shared_json(self, path: str | Path):
+        """Safe read-modify-write to a shared JSON file from async execute().
+
+        Acquires a per-path asyncio.Lock (run-scoped, injected by the scheduler),
+        loads current contents as a mutable dict (empty dict if file absent), yields
+        it for in-place modification, then writes back atomically on exit.
+
+        Usage::
+
+            async with self.shared_json("/workspace/results/shared.json") as data:
+                data.setdefault("entities", []).append(my_entity)
+
+        NOT available from run_sync() tasks — asyncio.Lock cannot be awaited from a
+        thread.  Override execute() as async if shared-file accumulation is required.
+        """
+        from pipeline_engine.core import storage as _storage
+        p = Path(path)
+        lock = self._path_locks.setdefault(str(p.resolve()), asyncio.Lock())
+        async with lock:
+            data: dict[str, Any] = _storage.load_json_safe(p) or {}
+            yield data
+            _storage.atomic_write_json(p, data)
 
     def validate_input(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """若声明了 InputModel，则对输入数据做 Pydantic 校验。"""

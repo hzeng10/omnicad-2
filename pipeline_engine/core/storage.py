@@ -87,6 +87,14 @@ def read_json(path: str | Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def load_json_safe(path: str | Path) -> Any | None:
+    """读取并解析 JSON 文件；文件不存在时返回 None（不抛异常）。"""
+    p = Path(path)
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
 # ─── 状态持久化 ────────────────────────────────────────────────────────────────
 
 def persist_state(run_state: PipelineRunState) -> None:

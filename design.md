@@ -648,7 +648,87 @@ View 类的字段集合、字段顺序与对应 runtime model 完全一致，由
 
 ---
 
-### 6.14 HTTP REST API（`pipeline_engine/api/`）
+### 6.14 并行任务共享文件安全（Shared Output Safety）
+
+#### 问题背景
+
+同一 Step 内的多个 Task 通过 `asyncio.gather` 并发执行。当它们都声明了相同的 `output: PATH` 时，引擎的 MIRROR 写入（`atomic_write_json`）是同步调用（无 `await`），asyncio 单线程模型使写入本身序列化，不会产生字节级文件损坏。但**最后完成的 Task 会静默覆盖之前 Task 的写入结果**，造成数据丢失。
+
+同样，如果 Task 代码在 `execute()` 中直接对共享文件执行**读-改-写**（read-modify-write），读取和写入之间若有 `await` 挂起点，另一个并发 Task 可能在此间隙读取到旧数据并覆写——经典 TOCTOU 竞争。
+
+#### 双重保护机制
+
+```
+Pipeline YAML 加载时（StepSpec 模型校验）
+         ↓
+  ┌──────────────────────────────────────────────────────────┐
+  │  check_shared_output_paths() validator                   │
+  │                                                          │
+  │  Task A: output="results/shared.json"  ← 相同路径？       │
+  │  Task B: output="results/shared.json"                    │
+  │                                                          │
+  │  两者 output_mode 均为 "accumulate"？                      │
+  │       YES → 合法，继续加载                                  │
+  │       NO  → ValidationError（加载即报错，阻止运行）          │
+  └──────────────────────────────────────────────────────────┘
+         ↓（仅 accumulate 模式才允许共享路径）
+
+运行时（AsyncScheduler._do_mirror_write）
+
+  Task A 完成          Task B 完成          Task C 完成
+       │                    │                    │
+       ▼                    ▼                    ▼
+  acquire lock        acquire lock          acquire lock
+  (per-path           (same lock,           (same lock,
+   asyncio.Lock)       blocks)               blocks)
+       │                    │                    │
+  read shared.json    read shared.json      read shared.json
+  {} → {A: out_A}     {A:…} → {A:…,B:…}    {A,B:…} → {A,B,C:…}
+  atomic_write()      atomic_write()        atomic_write()
+  release lock        release lock          release lock
+
+最终 shared.json = {"task_a": {...}, "task_b": {...}, "task_c": {...}}
+```
+
+#### 任务代码中的直接写入（shared_json API）
+
+当 Task `execute()` 内部需要直接读改写共享文件（不通过 YAML `output:` 通道），使用 `BaseTask.shared_json()` 上下文管理器：
+
+```
+Task A execute()                   Task B execute()
+─────────────────────────────      ─────────────────────────────
+async with self.shared_json(path)  await some_computation()
+    as data:                            ↓
+  # 持有锁：Task B 在此被阻塞          async with self.shared_json(path)
+  data["a_result"] = my_val                as data:
+  # 离开 with → 原子写回                # Task A 释放锁后才进入
+                                       data["b_result"] = my_val
+```
+
+`shared_json()` 使用与 `_do_mirror_write` 相同的 `self._path_locks` 注册表（由 `AsyncScheduler` 注入），确保引擎写入和任务直接写入共享同一把锁，不会相互竞争。
+
+#### output_mode 语义
+
+| `output_mode` | 行为 | YAML 约束 |
+|---|---|---|
+| `overwrite`（默认） | 整体覆写目标文件；per-path 锁确保序列化（写入本身原子，无内容合并） | 同一 Step 内只能有一个 Task 写此路径，否则 ValidationError |
+| `accumulate` | 持锁读现有内容 → 合并 `{task_id: output}` → 原子写回 | 同一路径的所有 Task 均须声明此模式，否则 ValidationError |
+
+#### 关键实现位置
+
+| 文件 | 位置 | 职责 |
+|---|---|---|
+| `pipeline_engine/models/pipeline_spec.py` | `StepSpec.check_shared_output_paths` | YAML 加载时校验；ValidationError 阻止 run |
+| `pipeline_engine/core/scheduler.py` | `AsyncScheduler._path_locks` | 运行时 per-path lock 注册表（run-scoped） |
+| `pipeline_engine/core/scheduler.py` | `_do_mirror_write()` | 持锁执行 MIRROR / ACCUMULATE 写入 |
+| `pipeline_engine/core/base_task.py` | `BaseTask.shared_json()` | 任务代码安全读改写 API |
+| `pipeline_engine/core/storage.py` | `load_json_safe()` | 文件不存在时返回 None（用于 accumulate 初始读取） |
+
+**注意**：`run_sync()` 同步任务运行在线程池中，`asyncio.Lock` 无法从线程中 `await`，`shared_json()` 仅适用于 `async execute()` 任务。需要共享文件写入的同步任务应改写为 `async execute()`。
+
+---
+
+### 6.15 HTTP REST API（`pipeline_engine/api/`）
 
 FastAPI 应用由 `pipeline_engine/api/app.py` 的 `create_app(svc)` 工厂创建，挂载两个路由组：
 
