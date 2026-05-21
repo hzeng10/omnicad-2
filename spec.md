@@ -42,6 +42,40 @@
 
     **任务代码中的直接写入**：async task（`execute()`）可调用 `async with self.shared_json(path) as data:` 对共享 JSON 文件执行安全的读改写。该 API 使用与 MIRROR 写入相同的 per-path 锁注册表，确保引擎写入和任务直接写入不互相竞争。
 
+    **YAML 示例**（`cad_identify_cost_estimation` 的 `recognize` step，3 个并行识别任务共享一个输出文件）：
+    ```yaml
+    steps:
+      - id: recognize
+        name: "多类设备并行识别"
+        max_parallelism: 3
+        tasks:
+          - id: rec_building
+            plugin: pipelines.cad_identify_pipeline.tasks.RecBuildingTask
+            depends_on_steps: [split_subgraph]
+            output: results/detections.json
+            output_mode: accumulate        # 必须三个都声明
+
+          - id: rec_cable
+            plugin: pipelines.cad_identify_pipeline.tasks.RecCableTask
+            depends_on_steps: [split_subgraph]
+            output: results/detections.json
+            output_mode: accumulate
+
+          - id: rec_schematic
+            plugin: pipelines.cad_identify_pipeline.tasks.RecSchematicTask
+            depends_on_steps: [split_subgraph]
+            output: results/detections.json
+            output_mode: accumulate
+    ```
+    运行完成后 `results/detections.json` 的内容：
+    ```json
+    {
+      "rec_building":  { "entity_type": "building",  "entities": [...] },
+      "rec_cable":     { "entity_type": "cable",     "entities": [...] },
+      "rec_schematic": { "entity_type": "schematic", "entities": [...] }
+    }
+    ```
+
 
 ### 2.3 状态管理与干预 (Lifecycle & Intervention)
 *   **中止与恢复**: 

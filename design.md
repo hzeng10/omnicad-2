@@ -126,7 +126,9 @@ omnicad-2/
     │   ├── test_repl_autoload.py   # _autoload_pipelines 发现 / 幂等 / 失败跳过
     │   ├── test_repl_completion.py  # Tab 补全集成测试
     │   ├── test_repl_log_command.py # log 命令分页 / 过滤 / 补全
-    │   └── test_repl_rendering.py
+    │   ├── test_repl_rendering.py
+    │   ├── test_output_channels.py  # task/step/pipeline output: MIRROR / aggregate
+    │   └── test_shared_output_concurrent.py  # 并行 task 共享文件：accumulate / shared_json / YAML 校验
     └── e2e/
         ├── test_cad_example.py
         ├── test_cad_failure_recovery.py
@@ -725,6 +727,28 @@ async with self.shared_json(path)  await some_computation()
 | `pipeline_engine/core/storage.py` | `load_json_safe()` | 文件不存在时返回 None（用于 accumulate 初始读取） |
 
 **注意**：`run_sync()` 同步任务运行在线程池中，`asyncio.Lock` 无法从线程中 `await`，`shared_json()` 仅适用于 `async execute()` 任务。需要共享文件写入的同步任务应改写为 `async execute()`。
+
+#### 验证覆盖
+
+集成测试文件：`tests/integration/test_shared_output_concurrent.py`（5 个场景，434 个测试总计）
+
+| 测试函数 | 验证内容 |
+|---|---|
+| `test_three_parallel_tasks_accumulate_into_shared_file` | 3 个不同延迟的并行 task（模拟 `recognize` step）→ 结果文件包含全部 3 个 task key，无数据丢失 |
+| `test_accumulate_order_independent` | 反转延迟顺序（不同 task 先完成）→ 结果仍然完整 |
+| `test_shared_json_accumulates_list_from_parallel_tasks` | 3 个 task 通过 `shared_json()` 追加到共享列表 → 列表包含全部 3 项 |
+| `test_yaml_validation_blocks_shared_path_without_accumulate` | 未声明 `output_mode: accumulate` 的共享路径 → 加载即 `ValidationError` |
+| `test_single_task_overwrite_unchanged` | `output_mode: overwrite`（默认）单 task → 文件内容为 task 输出本身，不含 task_id 包装 |
+
+**test 1 运行时输出示例**（3 个并行识别任务，延迟 0.03 / 0.01 / 0.02 s，完成顺序 cable → schematic → building）：
+```json
+{
+  "rec_cable":     { "entity_type": "cable",     "count": 5, "entities": ["cable_0", ...] },
+  "rec_schematic": { "entity_type": "schematic", "count": 4, "entities": ["schematic_0", ...] },
+  "rec_building":  { "entity_type": "building",  "count": 2, "entities": ["building_0", "building_1"] }
+}
+```
+若无锁 + accumulate，最后完成的 `rec_building` 会静默覆盖前两者，文件中只剩 `{"entity_type": "building", ...}`。
 
 ---
 
