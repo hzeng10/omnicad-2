@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pipeline_cli = "pipeline_engine.cli:app"
+omnicad = "pipeline_engine.cli:app"
 
 [project.optional-dependencies]
 api = [

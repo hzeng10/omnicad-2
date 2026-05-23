@@ -1,4 +1,6 @@
-# Pipeline DAG 执行引擎
+# OmniCAD
+
+**DAG-based CAD workflow orchestration engine**
 
 基于 Python 3.10+ 的 CLI 工具，通过 YAML 文件定义并执行 DAG（有向无环图）工作流。引擎与业务逻辑完全解耦——只负责任务调度、数据路由和状态管理；业务任务以插件形式在运行时动态加载。
 
@@ -14,7 +16,7 @@
 - **交互式 REPL** — 基于 `prompt_toolkit` 的 REPL 与调度器共享事件循环，非阻塞运行；`status --watch` 在任务执行中实时刷新 Rich 表格
 - **运行日志** — 每个 instance 一份 `run.log`，汇聚引擎生命周期事件、`pipeline_engine.*` Python logging、Task `self.logger` 自定义日志及 stdout/stderr；`log` 命令分页查看，ERROR 行红色高亮，resume 续写同一文件
 - **完善的状态机守卫** — `finish_task`/`fail_task`/`update_progress` 均内置非法迁移检查，防止并发竞争导致状态混乱
-- **HTTP REST API** — `pipeline_cli serve` 以 RESTful 接口暴露全部命令；SSE 端点实时推送 task/pipeline 状态变更；响应信封与 CLI JSON 输出完全一致
+- **HTTP REST API** — `omnicad serve` 以 RESTful 接口暴露全部命令；SSE 端点实时推送 task/pipeline 状态变更；响应信封与 CLI JSON 输出完全一致
 - **90%+ 测试覆盖率** — 涵盖单元、集成、端到端三层
 
 ---
@@ -38,7 +40,7 @@ source .venv/bin/activate
 pip install -e .
 
 # 4. 验证安装
-pipeline_cli --help
+omnicad --help
 ```
 
 ### Windows (PowerShell)
@@ -56,7 +58,7 @@ py -3 -m venv .venv
 pip install -e .
 
 # 4. 验证安装
-pipeline_cli --help
+omnicad --help
 ```
 
 > 若 PowerShell 提示脚本执行被禁止，以管理员权限执行 `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` 后重试。
@@ -68,7 +70,7 @@ cd %USERPROFILE%\dev\omnicad-2
 py -3 -m venv .venv
 .venv\Scripts\activate.bat
 pip install -e .
-pipeline_cli --help
+omnicad --help
 ```
 
 激活后命令行前缀会变为 `(.venv)`，表示已进入虚拟环境。退出虚拟环境执行 `deactivate`。
@@ -86,23 +88,44 @@ CLI 启动时（REPL 与一次性子命令均适用）自动扫描 `./pipelines/
 
 ### CLI 输出格式
 
-`pipeline_cli <subcommand>` 一次性子命令默认输出**单个 JSON 对象**到 stdout，便于 AI Agent 直接 `json.loads()` 解析。REPL 交互模式（无子命令）保持 Rich 文本渲染，行为不变。
+`omnicad <subcommand>` 一次性子命令默认输出**单个 JSON 对象**到 stdout，便于 AI Agent 直接 `json.loads()` 解析。REPL 交互模式（无子命令）保持 Rich 文本渲染，行为不变。
 
 ```bash
 # JSON 输出示例
-$ pipeline_cli list | jq .ok
+$ omnicad list | jq .ok
 true
-$ pipeline_cli list | jq '.pipelines[].pipeline_id'
+$ omnicad list | jq '.pipelines[].pipeline_id'
 "cad_identify_cost_estimation"
 
 # 失败时 ok=false，exit code=1
-$ pipeline_cli start no_such | jq .error.message
+$ omnicad start no_such | jq .error.message
 "pipeline 'no_such' 未加载"
 
 # 禁用 autoload（单次调用）
-$ pipeline_cli --no-autoload list
+$ omnicad --no-autoload list
 {"ok": true, "command": "list", "scope": "pipeline", "pipelines": []}
 ```
+
+### 品牌定制 / Branding
+
+CLI 的启动 Logo、REPL 提示符、版本号、副标题均来自 `config/branding.json`，修改后无需重新构建：
+
+```json
+{
+  "display_name": "OmniCAD",
+  "prompt":       "OmniCAD",
+  "version":      "@auto",
+  "description":  "DAG-based CAD workflow orchestration engine",
+  "logo_style":   "light_steel_blue1",
+  "border_style": "grey50",
+  "tagline_style":"grey70",
+  "box_style":    "ROUNDED"
+}
+```
+
+横幅**仅在 REPL 模式**（`omnicad` 无子命令）下显示；一次性子命令（`omnicad lint`、`omnicad list` 等）的 stdout 保持纯 JSON，不输出横幅。
+
+完整 Schema 见 `config/branding.schema.json`；字段说明见 spec.md §3.5 / design.md §6.16。
 
 ---
 
@@ -112,19 +135,19 @@ $ pipeline_cli --no-autoload list
 
 ```bash
 # 校验 YAML 语法与 DAG 合法性（不执行）— JSON 输出
-$ pipeline_cli lint pipelines/cad_identify_pipeline/pipeline.yaml
+$ omnicad lint pipelines/cad_identify_pipeline/pipeline.yaml
 {"ok": true, "command": "lint", "pipeline_id": "cad_identify_cost_estimation", "valid": true, "path": "..."}
 
 # 注册 pipeline 到本地 registry
-$ pipeline_cli load pipelines/cad_identify_pipeline/pipeline.yaml --workspace /tmp/cad_demo
+$ omnicad load pipelines/cad_identify_pipeline/pipeline.yaml --workspace /tmp/cad_demo
 {"ok": true, "command": "load", "loaded": [{"pipeline_id": "cad_identify_cost_estimation", "ok": true, ...}]}
 
 # autoload 已注册时无需手动 load（默认扫描 ./pipelines/*/pipeline.yaml）
-$ pipeline_cli list --workspace /tmp/cad_demo | jq .pipelines
+$ omnicad list --workspace /tmp/cad_demo | jq .pipelines
 [{"pipeline_id": "cad_identify_cost_estimation", "type": "CAD图识别及算量", "name": "CAD 设备成本汇总（示例）"}]
 
 # 列出运行实例
-$ pipeline_cli list --instance --workspace /tmp/cad_demo | jq .instances
+$ omnicad list --instance --workspace /tmp/cad_demo | jq .instances
 []
 ```
 
@@ -132,15 +155,15 @@ $ pipeline_cli list --instance --workspace /tmp/cad_demo | jq .instances
 
 ```bash
 # 运行并阻塞等待完成 — JSON 输出
-$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_identify_cost_estimation --workspace /tmp/cad_demo --wait \
+$ PIPELINE_DEMO_FAST=1 omnicad start cad_identify_cost_estimation --workspace /tmp/cad_demo --wait \
   | jq '{run_id: .runs[0].run_id, status: .runs[0].final_status}'
 {"run_id": "cad_identify_cost_estimation_20260513-093024_7392", "status": "success"}
 
 # 查看运行状态（支持跨进程：从磁盘恢复上次运行的状态）
 $ RUN=cad_identify_cost_estimation_20260513-093024_7392
-$ pipeline_cli status "$RUN" --workspace /tmp/cad_demo | jq .state.status
+$ omnicad status "$RUN" --workspace /tmp/cad_demo | jq .state.status
 "success"
-$ pipeline_cli status "$RUN" --workspace /tmp/cad_demo
+$ omnicad status "$RUN" --workspace /tmp/cad_demo
 ╭────────────────┬────────────────┬─────────┬──────────┬───────╮
 │ Step           │ Task           │ Status  │ Progress │ Error │
 ├────────────────┼────────────────┼─────────┼──────────┼───────┤
@@ -160,7 +183,7 @@ Pipeline 状态: success
 `inspect` 显示指定 task 的完整输入输出 JSON、进度、错误堆栈。下例展示 `merge` 任务——它通过 `depends_on_steps: [recognize]` 自动聚合了3个并行识别任务的输出作为输入：
 
 ```bash
-$ pipeline_cli inspect <instance_id> --step aggregate --task merge --workspace /tmp/cad_demo
+$ omnicad inspect <instance_id> --step aggregate --task merge --workspace /tmp/cad_demo
 
 ─────────────────────────────── merge ────────────────────────────────
 状态    : success  进度 : 100%
@@ -210,13 +233,13 @@ $ pipeline_cli inspect <instance_id> --step aggregate --task merge --workspace /
 ```bash
 # 1. 模拟 rec_cable 任务报错
 $ PIPELINE_DEMO_FAST=1 PIPELINE_DEMO_FAIL=rec_cable \
-  pipeline_cli start cad_identify_cost_estimation --workspace /tmp/cad_demo2 --wait
+  omnicad start cad_identify_cost_estimation --workspace /tmp/cad_demo2 --wait
 Started: 20260512T083200_497976_239806  (pipeline: cad_identify_cost_estimation)
 Task recognize/rec_cable failed: RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
   20260512T083200_497976_239806: failed
 
 # 2. 查看失败状态：rec_cable 失败，其余任务正常完成
-$ pipeline_cli status <instance_id> --workspace /tmp/cad_demo2
+$ omnicad status <instance_id> --workspace /tmp/cad_demo2
 │ recognize │ rec_building  │  success  │ 100% │                              │
 │           │ rec_cable     │  failed   │   0% │ RuntimeError: Intentional... │
 │           │ rec_schematic │  success  │ 100% │                              │
@@ -224,7 +247,7 @@ $ pipeline_cli status <instance_id> --workspace /tmp/cad_demo2
 Pipeline 状态: failed
 
 # 3. inspect 查看失败任务的完整错误堆栈
-$ pipeline_cli inspect <instance_id> --step recognize --task rec_cable --workspace /tmp/cad_demo2
+$ omnicad inspect <instance_id> --step recognize --task rec_cable --workspace /tmp/cad_demo2
 状态    : failed  进度 : 0%
 错误    : RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
 Traceback (most recent call last):
@@ -235,19 +258,19 @@ Traceback (most recent call last):
 RuntimeError: Intentional failure injected via PIPELINE_DEMO_FAIL=rec_cable
 
 # 4. fix --output：注入人工准备好的恢复数据（引擎自动校验 OutputModel 契约）
-$ pipeline_cli fix <instance_id> \
+$ omnicad fix <instance_id> \
   --task recognize/rec_cable \
   --output pipelines/cad_identify_pipeline/mock_data/recover_cable.json \
   --workspace /tmp/cad_demo2
 Fixed (output): task 'recognize/rec_cable' → FIXED
 
 # 5. resume：仅重调度 FAILED 任务；FIXED 任务跳过，不重复执行
-$ PIPELINE_DEMO_FAST=1 pipeline_cli resume <instance_id> --workspace /tmp/cad_demo2
+$ PIPELINE_DEMO_FAST=1 omnicad resume <instance_id> --workspace /tmp/cad_demo2
 Resumed: 20260512T083200_497976_239806
   20260512T083200_497976_239806: success
 
 # 6. 最终状态：rec_cable 为 fixed（已跳过），整体 success
-$ pipeline_cli status <instance_id> --workspace /tmp/cad_demo2
+$ omnicad status <instance_id> --workspace /tmp/cad_demo2
 │ recognize │ rec_building  │  success  │ 100% │
 │           │ rec_cable     │  fixed    │   0% │   ← 保留注入数据，未重跑
 │           │ rec_schematic │  success  │ 100% │
@@ -259,12 +282,12 @@ Pipeline 状态: success
 
 ```bash
 # 只执行 parse_dxf 步骤，其余步骤不触发
-$ PIPELINE_DEMO_FAST=1 pipeline_cli start cad_identify_cost_estimation \
+$ PIPELINE_DEMO_FAST=1 omnicad start cad_identify_cost_estimation \
   --step parse_dxf --workspace /tmp/cad_step --wait
 Started: 20260512T083250_212844_f15b79  (pipeline: cad_identify_cost_estimation)
   20260512T083250_212844_f15b79: new    ← pipeline 整体仍是 new（只完成了一步）
 
-$ pipeline_cli status <instance_id> --workspace /tmp/cad_step
+$ omnicad status <instance_id> --workspace /tmp/cad_step
 │ parse_dxf │ read_dxf       │ success │ 100% │
 │           │ parse_entities │ success │ 100% │
 Pipeline 状态: new
@@ -275,7 +298,7 @@ Pipeline 状态: new
 不带子命令启动时进入 REPL。REPL 与调度器共享事件循环——任务在后台执行，前台随时可输入命令查询或干预。
 
 ```
-$ pipeline_cli --workspace /tmp/cad_demo
+$ omnicad --workspace /tmp/cad_demo
 Pipeline REPL  (输入 help 查看命令)
 工作目录: /tmp/cad_demo
 
@@ -497,7 +520,7 @@ pytest --cov=pipeline_engine --cov-fail-under=90   # 带覆盖率检查
 
 ## HTTP API（`serve` 模式）
 
-`pipeline_cli serve` 以 RESTful HTTP 方式暴露所有命令，供远程客户端或 AI Agent 通过 JSON 调用。
+`omnicad serve` 以 RESTful HTTP 方式暴露所有命令，供远程客户端或 AI Agent 通过 JSON 调用。
 
 ### 启动
 
@@ -506,10 +529,10 @@ pytest --cov=pipeline_engine --cov-fail-under=90   # 带覆盖率检查
 pip install -e .[api]
 
 # 启动服务（默认绑定 127.0.0.1:8765）
-pipeline_cli serve --workspace /path/to/workspace
+omnicad serve --workspace /path/to/workspace
 
 # 自定义端口
-pipeline_cli serve --workspace /path/to/workspace --port 9000
+omnicad serve --workspace /path/to/workspace --port 9000
 ```
 
 > 服务绑定 127.0.0.1（本机），无鉴权。服务退出时所有进行中的 run 会被取消。

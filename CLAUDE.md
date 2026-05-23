@@ -25,14 +25,14 @@ pip install -e .                                                   # install wit
 pytest                                                             # run all tests
 pytest tests/unit/test_cli.py::test_load_single_pipeline -v       # run a single test
 pytest --cov=pipeline_engine --cov-fail-under=90                  # run with coverage gate
-pipeline_cli lint path/to/pipeline.yaml                           # validate YAML schema (JSON out)
-pipeline_cli list                                                  # list registered pipelines (JSON)
-pipeline_cli --no-autoload list                                    # skip autoload discovery
+omnicad lint path/to/pipeline.yaml                           # validate YAML schema (JSON out)
+omnicad list                                                  # list registered pipelines (JSON)
+omnicad --no-autoload list                                    # skip autoload discovery
 ```
 
 ### CLI output modes
 
-All `pipeline_cli <subcommand>` one-shot invocations output a **single JSON object** to stdout
+All `omnicad <subcommand>` one-shot invocations output a **single JSON object** to stdout
 (flat envelope with `ok` field), suitable for `json.loads()` by AI Agents:
 
 ```json
@@ -40,13 +40,13 @@ All `pipeline_cli <subcommand>` one-shot invocations output a **single JSON obje
 {"ok": false, "command": "start", "error": {"message": "...", "type": "PipelineError", ...}}
 ```
 
-Running `pipeline_cli` without a subcommand enters the REPL — Rich text rendering, behaviour unchanged.
+Running `omnicad` without a subcommand enters the REPL — Rich text rendering, behaviour unchanged.
 
 **New CLI subcommands must call `cli_json.emit()` / `cli_json.emit_error()` for stdout output.**
 Output is formatted with `indent=2` by default; `json.loads()` handles multi-line JSON fine.
 
 **`start` blocks until all runs complete.** Background execution is only supported in serve mode
-(`pipeline_cli serve`), where `POST /runs` returns immediately and the server drives runs.
+(`omnicad serve`), where `POST /runs` returns immediately and the server drives runs.
 
 **New subcommands that read run state**: call `_bootstrap(rm, ctx, restore_runs=True)` with the
 default `restore_writeback=False` (read-only — does not demote RUNNING→FAILED). Only `resume`

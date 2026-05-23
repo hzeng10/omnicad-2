@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnicad/branding.schema.json",
+  "title": "OmniCAD Branding Config",
+  "description": "Customisable CLI branding shown on startup and in the REPL. Edit config/branding.json — no rebuild required.",
+  "type": "object",
+  "required": ["name", "display_name", "prompt", "version", "description"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Internal CLI identifier (informational; actual shell binary name is fixed by pyproject.toml [project.scripts])."
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Human-facing application name shown inside the banner panel, e.g. 'OmniCAD'."
+    },
+    "prompt": {
+      "type": "string",
+      "description": "REPL prompt root string. A trailing '> ' is automatically appended."
+    },
+    "version": {
+      "type": "string",
+      "description": "Version string shown in the banner. Use the literal '@auto' to derive from the installed pipeline-engine package metadata."
+    },
+    "description": {
+      "type": "string",
+      "description": "Short tagline shown beneath the display_name and version."
+    },
+    "logo": {
+      "type": "string",
+      "description": "Multi-line ASCII-art logo rendered at the top of the banner. Use '\\n' for line breaks. Empty string disables the logo block."
+    },
+    "logo_style": {
+      "type": "string",
+      "default": "light_steel_blue1",
+      "description": "Rich color/style applied to the logo glyphs (e.g. 'light_steel_blue1', 'bold cyan'). See https://rich.readthedocs.io/en/latest/style.html."
+    },
+    "border_style": {
+      "type": "string",
+      "default": "grey50",
+      "description": "Rich style applied to the surrounding Panel border (e.g. 'grey50', 'grey42', 'sky_blue3')."
+    },
+    "tagline_style": {
+      "type": "string",
+      "default": "grey70",
+      "description": "Rich style applied to the display_name, version, and description lines."
+    },
+    "box_style": {
+      "type": "string",
+      "enum": ["ROUNDED", "HEAVY", "DOUBLE", "SQUARE", "MINIMAL"],
+      "default": "ROUNDED",
+      "description": "Which Rich box constant to use for the Panel outline. ROUNDED (default) uses ╭─╮ / │ / ╰─╯ corners."
+    }
+  }
+}

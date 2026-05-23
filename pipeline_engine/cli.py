@@ -43,8 +43,8 @@ from typing import Optional
 import typer
 
 app = typer.Typer(
-    name="pipeline_cli",
-    help="Pipeline DAG Engine — 通过 YAML 定义、运行和监控 DAG 工作流。",
+    name="omnicad",
+    help="OmniCAD — DAG-based CAD workflow orchestration engine.",
     add_completion=False,
     no_args_is_help=False,
 )

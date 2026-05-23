@@ -100,7 +100,7 @@
 
 ### 3.1 核心指令集
 
-**输出模式说明**：`pipeline_cli <subcommand>` 一次性子命令默认输出单个 JSON 对象（见 §3.3）到 stdout，便于 AI Agent 解析。REPL 交互模式（无子命令进入的提示符模式）保持 Rich 文本渲染，行为不变。
+**输出模式说明**：`omnicad <subcommand>` 一次性子命令默认输出单个 JSON 对象（见 §3.3）到 stdout，便于 AI Agent 解析。REPL 交互模式（无子命令进入的提示符模式）保持 Rich 文本渲染，行为不变。
 
 | 指令 | 目标 | 说明 |
 | :--- | :--- | :--- |
@@ -118,7 +118,7 @@
 
 ### 3.2 CLI JSON 输出契约
 
-所有 `pipeline_cli <subcommand>` 一次性子命令输出以下信封格式（扁平 + `ok` 字段），以 **`indent=2`** 格式化输出，便于人工阅读，同时保持 `json.loads()` 兼容。
+所有 `omnicad <subcommand>` 一次性子命令输出以下信封格式（扁平 + `ok` 字段），以 **`indent=2`** 格式化输出，便于人工阅读，同时保持 `json.loads()` 兼容。
 
 **成功**：
 ```json
@@ -171,7 +171,7 @@
 
 ### 3.4 HTTP REST API（serve 模式）
 
-`pipeline_cli serve [--host HOST] [--port PORT] [--workspace PATH]` 启动 FastAPI HTTP 服务器（默认 127.0.0.1:8765，无鉴权），提供与 CLI 子命令语义一致的 REST 接口。
+`omnicad serve [--host HOST] [--port PORT] [--workspace PATH]` 启动 FastAPI HTTP 服务器（默认 127.0.0.1:8765，无鉴权），提供与 CLI 子命令语义一致的 REST 接口。
 
 **工作区互斥锁**：`serve` 启动时在 `.pipeline_runs/.serve.lock` 上获取 `fcntl` 排他锁；同一 workspace 的第二个 serve 进程立即以 exit code 1 退出。
 
@@ -198,6 +198,34 @@
 **REST resume 非阻塞（H2）**：`:resume` 在触发后台调度后立即返回 202 Accepted，响应体仅含 `{"ok": true, "command": "resume", "resumed": "<run_id>"}`，不含 `final_status`（因为 run 尚未完成）。客户端通过 `GET /runs/{run_id}` 轮询或订阅 SSE 事件流跟踪执行进度。CLI `resume` 子命令仍阻塞到完成并返回 `final_status`，行为不变。
 
 **响应信封**：所有端点返回与 CLI JSON 子命令一致的 `{"ok": bool, "command": "...", ...payload}` 信封格式，由 `envelope_ok()` / `envelope_err()` 统一构建（定义在 `pipeline_engine/api/schemas.py`）。
+
+### 3.5 CLI 品牌定制 (Branding)
+
+CLI 名称、REPL 提示符、启动 Logo、版本号、副标题统一由 `config/branding.json` 配置；Schema 定义在 `config/branding.schema.json`（JSON Schema Draft 2020-12）。修改该文件无需重新构建或安装。
+
+**启动横幅显示规则**：
+
+| 调用方式 | 横幅显示 |
+|---|---|
+| `omnicad`（无子命令，进入 REPL） | 显示 — Logo + 版本 + 描述居中，圆角 Panel 包裹 |
+| `omnicad <subcommand>`（一次性子命令） | 不显示 — stdout 保持纯 JSON，stderr 保持静默 |
+
+**配置字段（`config/branding.json`）**：
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|---|---|---|---|---|
+| `name` | string | ✓ | — | CLI 内部标识符（信息性；实际二进制名由 `pyproject.toml` 决定） |
+| `display_name` | string | ✓ | — | 横幅中展示的人类可读名称，如 `OmniCAD` |
+| `prompt` | string | ✓ | — | REPL 提示符根字符串，自动追加 `> ` |
+| `version` | string | ✓ | — | 版本字符串；`"@auto"` 从安装包元数据自动推导 |
+| `description` | string | ✓ | — | 显示在版本号下方的短副标题 |
+| `logo` | string | — | `""` | 多行 ASCII logo，空字符串禁用 logo 块 |
+| `logo_style` | string | — | `light_steel_blue1` | Rich 样式，作用于 logo 字形 |
+| `border_style` | string | — | `grey50` | Rich 样式，作用于 Panel 边框 |
+| `tagline_style` | string | — | `grey70` | Rich 样式，作用于版本 / 描述行 |
+| `box_style` | string | — | `ROUNDED` | Panel 边框形状：`ROUNDED` / `HEAVY` / `DOUBLE` / `SQUARE` / `MINIMAL` |
+
+详见 design.md §6.16。
 
 ---
 

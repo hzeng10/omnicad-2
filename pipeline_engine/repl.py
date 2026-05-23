@@ -97,12 +97,13 @@ async def run_repl(
         complete_while_typing=True,
     )
 
-    console.print("[bold green]Pipeline REPL[/bold green]  (输入 [cyan]help[/cyan] 查看命令)")
-    console.print(f"工作目录: [dim]{workspace}[/dim]\n")
+    from pipeline_engine import branding as _branding
+    _cfg = _branding.load_branding()
+    _branding.print_banner(console, _cfg, workspace=workspace)
 
     while True:
         try:
-            raw = await session.prompt_async("pipeline> ")
+            raw = await session.prompt_async(f"{_cfg.prompt}> ")
         except (EOFError, KeyboardInterrupt):
             console.print("\n[yellow]请输入 'exit' 退出。[/yellow]")
             continue
@@ -134,10 +135,13 @@ async def _run_repl_basic(
     base_dir = pipelines_dir if pipelines_dir is not None else Path.cwd() / "pipelines"
     svc = PipelineService(rm, pipelines_dir=base_dir, no_autoload=no_autoload)
     await _bootstrap_repl(svc)
-    console.print("[bold green]Pipeline REPL（基础模式）[/bold green]")
+    from pipeline_engine import branding as _branding
+    _cfg = _branding.load_branding()
+    _branding.print_banner(console, _cfg, workspace=workspace)
+
     while True:
         try:
-            raw = input("pipeline> ").strip()
+            raw = input(f"{_cfg.prompt}> ").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not raw:
