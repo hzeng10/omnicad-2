@@ -77,6 +77,26 @@ omnicad --help
 
 > 示例 pipeline 位于 `pipelines/cad_identify_pipeline/`，包含 4 个步骤 / 7 个任务，覆盖串行、并行、长时任务、fix/resume 等所有特性。设置 `PIPELINE_DEMO_FAST=1` 可将所有 sleep 缩短至 10% 以便快速体验。
 
+### Running with Python directly
+
+If `omnicad` is not on your PATH (e.g., you installed into a venv that isn't activated), you can invoke the CLI through Python's `-m` flag instead:
+
+```bash
+# Equivalent to `omnicad --help`
+python -m pipeline_engine --help
+
+# Equivalent to `omnicad lint config/pipeline.schema.json`
+python -m pipeline_engine lint config/pipeline.schema.json
+
+# Equivalent to `omnicad list`
+python -m pipeline_engine list
+
+# Works with all subcommands and global options
+OMNICAD_LANG=en python -m pipeline_engine --help
+```
+
+`python -m pipeline_engine` supports every subcommand and option that the `omnicad` binary does. It is especially useful in CI environments where the venv is not activated, or when calling from scripts where the Python interpreter path is known but `omnicad` is not in `PATH`.
+
 ### Autoload（自动加载）
 
 CLI 启动时（REPL 与一次性子命令均适用）自动扫描 `./pipelines/*/pipeline.yaml`（一级深度），将每个找到的 YAML 视同 `load` 命令注册到引擎，无需手动 `load`。
@@ -126,6 +146,34 @@ CLI 的启动 Logo、REPL 提示符、版本号、副标题均来自 `config/bra
 横幅**仅在 REPL 模式**（`omnicad` 无子命令）下显示；一次性子命令（`omnicad lint`、`omnicad list` 等）的 stdout 保持纯 JSON，不输出横幅。
 
 完整 Schema 见 `config/branding.schema.json`；字段说明见 spec.md §3.5 / design.md §6.16。
+
+### 多语言 / i18n
+
+CLI 界面语言（命令帮助文本、REPL 提示、状态标签、错误消息）可在 **不重新构建** 的情况下切换。默认语言为简体中文（`zh_CN`）。
+
+**切换方式（优先级由高到低）：**
+
+| 方式 | 示例 |
+|---|---|
+| 环境变量（本次进程） | `OMNICAD_LANG=en omnicad --help` |
+| 配置文件（永久） | 编辑 `config/i18n.json` → `{"language": "en"}` |
+| 系统 locale（自动） | 系统 locale 为 `en_*` 时自动使用英文 |
+
+```bash
+# English help text
+OMNICAD_LANG=en omnicad --help
+
+# English REPL
+OMNICAD_LANG=en omnicad
+
+# Permanent English mode
+echo '{"language": "en"}' > config/i18n.json
+omnicad --help            # → English until you change it back
+```
+
+**添加新语言（扩展点）：** 在 `config/i18n/` 目录下新建 `<locale>.json` 文件，内容为 `{"key": "translated string", ...}` 的平铺键值对，无需修改任何代码。翻译文件中缺失的键自动回退到 `zh_CN.json`。
+
+现有翻译文件：`config/i18n/zh_CN.json`（简体中文）、`config/i18n/en.json`（English）。完整 Schema 见 `config/i18n.schema.json`；字段说明见 spec.md §3.6 / design.md §6.17。
 
 ---
 

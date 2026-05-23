@@ -27,6 +27,7 @@ from rich.table import Table
 from pipeline_engine.core import storage
 from pipeline_engine.core.errors import PipelineError
 from pipeline_engine.core.run_manager import RunManager
+from pipeline_engine.i18n import t
 from pipeline_engine.models.runtime_state import PipelineRunState, Status
 
 if TYPE_CHECKING:
@@ -37,26 +38,28 @@ _LOG_LEVEL_RE = re.compile(r"^\S+\s+(\w+)\s+")
 
 console = Console()
 
-_HELP = """\
-[bold cyan]可用命令：[/bold cyan]
-  load <path> [<path>...]                                          加载 pipeline YAML 文件
-  list [--pipeline]                                                列出已注册的 pipeline（pipeline_id / type / name）
-  list --instance                                                  列出运行实例（pipeline_id / instance_id / status）
-  start <id> [<id>...] [--step S] [--task T]                      启动一个或多个实例（非阻塞）
-  stop <instance_id>                                               中止指定 pipeline 实例
-  resume <instance_id> [--include-paused]                         恢复失败的 pipeline 实例
-  status <instance_id> [--watch]                                   查看 pipeline 实例状态（--watch：持续刷新）
-  status --all                                                     查看所有活跃 pipeline 实例
-  inspect <instance_id> [--step S] [--task T]                     查看 task 详情（输入/输出/日志）
-  fix <instance_id> --task T --output PATH                         注入恢复的 output.json
-  fix <instance_id> --task T --input PATH                          注入替换的 input.json
-  log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]  查看 run 日志（ERROR 高亮红色）
-  clear                                                            清屏
-  help                                                             显示此帮助
-  exit / quit                                                      退出 REPL
+def _build_help() -> str:
+    """Build the REPL help text in the active language."""
+    return f"""\
+[bold cyan]{t('repl.help.header')}[/bold cyan]
+  load <path> [<path>...]                                          {t('repl.help.load')}
+  list [--pipeline]                                                {t('repl.help.list_pipeline')}
+  list --instance                                                  {t('repl.help.list_instance')}
+  start <id> [<id>...] [--step S] [--task T]                      {t('repl.help.start')}
+  stop <instance_id>                                               {t('repl.help.stop')}
+  resume <instance_id> [--include-paused]                         {t('repl.help.resume')}
+  status <instance_id> [--watch]                                   {t('repl.help.status')}
+  status --all                                                     {t('repl.help.status_all')}
+  inspect <instance_id> [--step S] [--task T]                     {t('repl.help.inspect')}
+  fix <instance_id> --task T --output PATH                         {t('repl.help.fix_output')}
+  fix <instance_id> --task T --input PATH                          {t('repl.help.fix_input')}
+  log <instance_id> [--tail N] [--offset N] [--all] [--errors-only]  {t('repl.help.log')}
+  clear                                                            {t('repl.help.clear')}
+  help                                                             {t('repl.help.help')}
+  exit / quit                                                      {t('repl.help.exit')}
 
-[dim]Instance ID 格式：<pipeline_id>_yyyyMMdd-hhmmss_<4digit>  例：cad_drawing_pipeline_20260513-093024_7392[/dim]
-[dim]提示：按 Tab 可补全命令名、pipeline ID、instance ID、step/task 及路径。[/dim]
+[dim]{t('repl.hint.instance_id_fmt')}[/dim]
+[dim]{t('repl.hint.tab_complete')}[/dim]
 """
 
 
@@ -80,7 +83,7 @@ async def run_repl(
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from pipeline_engine.repl_completion import PipelineReplCompleter
     except ImportError:
-        console.print("[red]prompt_toolkit 未安装 — 退回基础输入模式。[/red]")
+        console.print(f"[red]{t('repl.err.prompt_toolkit_missing')}[/red]")
         await _run_repl_basic(workspace, pipelines_dir=pipelines_dir, no_autoload=no_autoload)
         return
 
@@ -105,7 +108,7 @@ async def run_repl(
         try:
             raw = await session.prompt_async(f"{_cfg.prompt}> ")
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[yellow]请输入 'exit' 退出。[/yellow]")
+            console.print(f"\n[yellow]{t('repl.info.exit_hint')}[/yellow]")
             continue
 
         raw = raw.strip()
@@ -117,9 +120,9 @@ async def run_repl(
         except SystemExit:
             break
         except PipelineError as e:
-            console.print(f"[red]错误:[/red] {e}")
+            console.print(f"[red]{t('repl.label.err')}:[/red] {e}")
         except Exception as e:
-            console.print(f"[red]意外错误:[/red] {e}")
+            console.print(f"[red]{t('repl.label.unexpected_err')}:[/red] {e}")
             console.print_exception(max_frames=5)
 
 
@@ -151,7 +154,7 @@ async def _run_repl_basic(
         except SystemExit:
             break
         except PipelineError as e:
-            console.print(f"[red]错误:[/red] {e}")
+            console.print(f"[red]{t('repl.label.err')}:[/red] {e}")
 
 
 # ─── 命令分发 ─────────────────────────────────────────────────────────────────
@@ -167,7 +170,7 @@ async def _dispatch(svc: "PipelineService", raw: str) -> None:
     try:
         argv = shlex.split(raw)
     except ValueError as e:
-        console.print(f"[red]解析错误:[/red] {e}")
+        console.print(f"[red]{t('repl.err.parse_error')}:[/red] {e}")
         return
 
     if not argv:
@@ -177,28 +180,28 @@ async def _dispatch(svc: "PipelineService", raw: str) -> None:
 
     match cmd:
         case "help":
-            console.print(_HELP)
+            console.print(_build_help())
 
         case "exit" | "quit":
             # 退出前提示仍有活跃 run
             active = [r for r in rm.list_runs() if r["active"]]
             if active:
                 console.print(
-                    f"[yellow]警告:[/yellow] {len(active)} 个 run 仍在运行，"
-                    "退出后将被放弃。"
+                    f"[yellow]{t('repl.label.warn')}:[/yellow] "
+                    + t("repl.warn.exit_active_runs").format(n=len(active))
                 )
             raise SystemExit
 
         case "load":
             if not args:
-                console.print("[yellow]用法:[/yellow] load <path> [<path>...]")
+                console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.load')}")
                 return
             result = await svc.cmd_load([Path(p) for p in args])
             for item in result["loaded"]:
                 if item["ok"]:
-                    console.print(f"[green]已加载:[/green] {item['pipeline_id']}")
+                    console.print(f"[green]{t('repl.success.load_ok')}:[/green] {item['pipeline_id']}")
                 else:
-                    console.print(f"[red]加载失败:[/red] {item['path']}: {item.get('error', '')}")
+                    console.print(f"[red]{t('repl.success.load_fail')}:[/red] {item['path']}: {item.get('error', '')}")
 
         case "list":
             flags = set(args)
@@ -232,7 +235,7 @@ async def _dispatch(svc: "PipelineService", raw: str) -> None:
             console.clear()
 
         case _:
-            console.print(f"[red]未知命令:[/red] {cmd!r}  (输入 [cyan]help[/cyan] 查看命令列表)")
+            console.print(f"[red]{t('repl.err.unknown_cmd')}:[/red] {cmd!r}  ({t('repl.err.unknown_cmd_hint')})")
 
 
 # ─── 各命令处理函数 ───────────────────────────────────────────────────────────
@@ -240,7 +243,7 @@ async def _dispatch(svc: "PipelineService", raw: str) -> None:
 async def _cmd_start(svc: "PipelineService", args: list[str]) -> None:
     """start 命令处理器：支持多个 pipeline_id，行为与 CLI start 子命令一致。"""
     if not args:
-        console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.start')}")
         return
 
     step_id = _get_flag(args, "--step")
@@ -250,35 +253,38 @@ async def _cmd_start(svc: "PipelineService", args: list[str]) -> None:
     pipeline_ids = [a for a in args if not a.startswith("--") and a != step_id and a != task_id]
 
     if not pipeline_ids:
-        console.print("[yellow]用法:[/yellow] start <pipeline_id> [<pipeline_id>...] [--step S] [--task T]")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.start')}")
         return
 
     result = await svc.cmd_start(pipeline_ids, step=step_id, task=task_id, wait=False)
     for r in result["runs"]:
         if r["ok"]:
-            console.print(f"[green]已启动:[/green] {r['run_id']}  (pipeline: {r['pipeline_id']})")
+            console.print(f"[green]{t('repl.success.start_ok')}:[/green] {r['run_id']}  (pipeline: {r['pipeline_id']})")
         else:
-            console.print(f"[red]错误:[/red] pipeline '{r['pipeline_id']}' 启动失败: {r.get('error', '')}")
+            console.print(
+                f"[red]{t('repl.label.err')}:[/red] "
+                + t("repl.err.pipeline_start_failed").format(pipeline_id=r["pipeline_id"], error=r.get("error", ""))
+            )
 
 
 async def _cmd_stop(svc: "PipelineService", args: list[str]) -> None:
     if not args:
-        console.print("[yellow]用法:[/yellow] stop <instance_id>")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.stop')}")
         return
     ref = args[0]
     await svc.cmd_stop(ref)
-    console.print(f"[yellow]已中止:[/yellow] {ref}")
+    console.print(f"[yellow]{t('repl.success.stop_ok')}:[/yellow] {ref}")
 
 
 async def _cmd_resume(svc: "PipelineService", args: list[str]) -> None:
     if not args:
-        console.print("[yellow]用法:[/yellow] resume <instance_id> [--include-paused]")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.resume')}")
         return
     ref = args[0]
     include_paused = "--include-paused" in args
     # Non-blocking: fire the resume task and return immediately to the REPL prompt.
     run_id = await svc.rm.resume(ref, include_paused=include_paused)
-    console.print(f"[green]已开始恢复（运行中）:[/green] {run_id}")
+    console.print(f"[green]{t('repl.success.resume_ok')}:[/green] {run_id}")
 
 
 async def _cmd_status(svc: "PipelineService", args: list[str]) -> None:
@@ -287,7 +293,7 @@ async def _cmd_status(svc: "PipelineService", args: list[str]) -> None:
         return
 
     if not args:
-        console.print("[yellow]用法:[/yellow] status <instance_id> [--watch]")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.status')}")
         return
 
     ref = args[0]
@@ -302,7 +308,7 @@ async def _cmd_status(svc: "PipelineService", args: list[str]) -> None:
 
 async def _cmd_inspect(svc: "PipelineService", args: list[str]) -> None:
     if not args:
-        console.print("[yellow]用法:[/yellow] inspect <instance_id> [--step S] [--task T]")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.inspect')}")
         return
     ref = args[0]
     rest = args[1:]
@@ -314,7 +320,7 @@ async def _cmd_inspect(svc: "PipelineService", args: list[str]) -> None:
 
 async def _cmd_fix(svc: "PipelineService", args: list[str]) -> None:
     if len(args) < 1:
-        console.print("[yellow]用法:[/yellow] fix <instance_id> --task T --output PATH  |  --input PATH")
+        console.print(f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.fix')}")
         return
     ref = args[0]
     rest = args[1:]
@@ -323,10 +329,10 @@ async def _cmd_fix(svc: "PipelineService", args: list[str]) -> None:
     input_path = _get_flag(rest, "--input")
 
     if not task_locator:
-        console.print("[red]错误:[/red] fix 需要 --task 参数")
+        console.print(f"[red]{t('repl.label.err')}:[/red] {t('repl.err.fix_task_missing')}")
         return
     if not output_path and not input_path:
-        console.print("[red]错误:[/red] fix 需要 --output 或 --input 参数")
+        console.print(f"[red]{t('repl.label.err')}:[/red] {t('repl.err.fix_path_missing')}")
         return
 
     result = await svc.cmd_fix(
@@ -336,9 +342,9 @@ async def _cmd_fix(svc: "PipelineService", args: list[str]) -> None:
         input_path=Path(input_path) if input_path else None,
     )
     if result["mode"] == "output":
-        console.print(f"[green]修复成功 (output):[/green] task '{task_locator}' → FIXED")
+        console.print(f"[green]{t('repl.success.fix_output').format(task=task_locator)}[/green]")
     else:
-        console.print(f"[green]修复成功 (input):[/green] task '{task_locator}' 输入已更新 → NEW")
+        console.print(f"[green]{t('repl.success.fix_input').format(task=task_locator)}[/green]")
 
 
 # ─── 渲染工具 ────────────────────────────────────────────────────────────────
@@ -370,11 +376,11 @@ def _render_status(state: PipelineRunState) -> None:
         box=box.ROUNDED,
         show_lines=True,
     )
-    table.add_column("Step", style="bold")
-    table.add_column("Task")
-    table.add_column("Status", justify="center")
-    table.add_column("Progress", justify="right")
-    table.add_column("Error", style="dim red", no_wrap=False, max_width=50)
+    table.add_column(t("repl.col.step"), style="bold")
+    table.add_column(t("repl.col.task"))
+    table.add_column(t("repl.col.status"), justify="center")
+    table.add_column(t("repl.col.progress"), justify="right")
+    table.add_column(t("repl.col.error"), style="dim red", no_wrap=False, max_width=50)
 
     for step_id, step_view in view.steps.items():
         first = True
@@ -392,7 +398,7 @@ def _render_status(state: PipelineRunState) -> None:
             table.add_row(step_id, "—", _colorize(step_view.status), "", "")
 
     console.print(table)
-    console.print(f"Pipeline 状态: {_colorize(view.status)}")
+    console.print(f"{t('repl.label.pipeline_status')}{_colorize(view.status)}")
 
 
 async def _watch_status(rm: RunManager, ref: str, refresh: float = 0.5) -> None:
@@ -423,10 +429,10 @@ def _build_status_renderable(state: PipelineRunState) -> Table:
         title=f"Run: {state.run_id}  pipeline: {state.pipeline_id}  [{state.status.value}]",
         box=box.MINIMAL_DOUBLE_HEAD,
     )
-    table.add_column("Step")
-    table.add_column("Task")
-    table.add_column("Status", justify="center")
-    table.add_column("Progress", justify="right")
+    table.add_column(t("repl.col.step"))
+    table.add_column(t("repl.col.task"))
+    table.add_column(t("repl.col.status"), justify="center")
+    table.add_column(t("repl.col.progress"), justify="right")
 
     for step_id, step_state in state.steps.items():
         first = True
@@ -453,7 +459,7 @@ def _render_inspect(
 
     step_state = state.steps.get(step_id)
     if step_state is None:
-        console.print(f"[red]Step '{step_id}' 在本 run 中不存在。[/red]")
+        console.print(f"[red]{t('repl.err.step_not_found').format(step_id=step_id)}[/red]")
         return
 
     if task_id is None:
@@ -463,7 +469,7 @@ def _render_inspect(
 
     ts = step_state.tasks.get(task_id)
     if ts is None:
-        console.print(f"[red]Task '{task_id}' 在 step '{step_id}' 中不存在。[/red]")
+        console.print(f"[red]{t('repl.err.task_not_found').format(task_id=task_id, step_id=step_id)}[/red]")
         return
     _render_task_detail(task_id, ts)
 
@@ -474,18 +480,18 @@ def _render_task_detail(task_id: str, ts) -> None:
     view = build_task_detail_view(ts, log_tail_size=200)
 
     console.rule(f"[bold]{task_id}[/bold]")
-    console.print(f"状态    : {_colorize(view.status)}")
-    console.print(f"进度    : {view.progress}%")
+    console.print(f"{t('repl.label.status')}{_colorize(view.status)}")
+    console.print(f"{t('repl.label.progress')}{view.progress}%")
     if view.error:
-        console.print(f"[red]错误    : {view.error}[/red]")
+        console.print(f"[red]{t('repl.label.error_detail')}{view.error}[/red]")
     if view.stack_trace:
         console.print(f"[dim]{view.stack_trace}[/dim]")
     if view.fixed_by:
-        console.print(f"[magenta]修复方式: {view.fixed_by}[/magenta]")
+        console.print(f"[magenta]{t('repl.label.fix_method')}{view.fixed_by}[/magenta]")
 
     for label, path_attr, content in (
-        ("输入", view.input_path, view.input),
-        ("输出", view.output_path, view.output),
+        (t("repl.label.input"), view.input_path, view.input),
+        (t("repl.label.output"), view.output_path, view.output),
     ):
         if path_attr:
             p = Path(path_attr)
@@ -497,10 +503,10 @@ def _render_task_detail(task_id: str, ts) -> None:
                 lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
                 console.print("\n".join(lines[:100]))
             else:
-                console.print("[dim](文件不存在)[/dim]")
+                console.print(f"[dim]{t('repl.label.file_not_exist')}[/dim]")
 
     if view.log_path:
-        console.print(f"\n[bold]日志[/bold] ({view.log_path}):")
+        console.print(f"\n[bold]{t('repl.label.log')}[/bold] ({view.log_path}):")
         if view.log_tail:
             console.print("\n".join(view.log_tail))
 
@@ -509,8 +515,7 @@ async def _cmd_log(svc: "PipelineService", args: list[str]) -> None:
     """log 命令：分页显示指定 instance 的 run.log，ERROR 行高亮红色。"""
     if not args:
         console.print(
-            "[yellow]用法:[/yellow] log <instance_id> "
-            "[--tail N] [--offset N] [--all] [--errors-only]"
+            f"[yellow]{t('repl.label.usage')}:[/yellow] {t('repl.usage.log')}"
         )
         return
 
@@ -523,7 +528,7 @@ async def _cmd_log(svc: "PipelineService", args: list[str]) -> None:
         tail = int(tail_str) if tail_str else 200
         offset = int(offset_str) if offset_str else 0
     except ValueError:
-        console.print("[red]错误:[/red] --tail / --offset 必须为整数")
+        console.print(f"[red]{t('repl.label.err')}:[/red] {t('repl.err.log_int_required')}")
         return
 
     show_all = "--all" in rest
@@ -533,12 +538,11 @@ async def _cmd_log(svc: "PipelineService", args: list[str]) -> None:
         ref, tail=tail, offset=offset, all_lines=show_all, errors_only=errors_only
     )
     if result["total"] == 0:
-        console.print(f"[dim]日志文件尚未生成: {result['log_path']}[/dim]")
+        console.print(f"[dim]{t('repl.log.not_found').format(log_path=result['log_path'])}[/dim]")
         return
 
     console.print(
-        f"[dim]日志: {result['log_path']}  共 {result['total']} 行  "
-        f"显示第 {result['start'] + 1}–{result['end']} 行[/dim]"
+        f"[dim]{t('repl.log.header').format(log_path=result['log_path'], total=result['total'], start=result['start'] + 1, end=result['end'])}[/dim]"
     )
     for line_dict in result["lines"]:
         _render_log_line(line_dict["raw"])
@@ -560,12 +564,12 @@ def _print_pipelines(rm: RunManager) -> None:
     """以表格格式输出已注册的 pipeline 列表（pipeline_id / type / name）。"""
     pipelines = rm.list_pipelines()
     if not pipelines:
-        console.print("[dim]暂无已加载的 pipeline。[/dim]")
+        console.print(f"[dim]{t('repl.info.empty_pipelines')}[/dim]")
         return
-    table = Table(box=box.SIMPLE, title="已加载的 Pipeline")
-    table.add_column("pipeline_id", style="bold")
-    table.add_column("type")
-    table.add_column("name")
+    table = Table(box=box.SIMPLE, title=t("repl.table.loaded_pipelines"))
+    table.add_column(t("repl.col.pipeline_id"), style="bold")
+    table.add_column(t("repl.col.type"))
+    table.add_column(t("repl.col.name"))
     for p in pipelines:
         table.add_row(p["pipeline_id"], p.get("type", ""), p["name"])
     console.print(table)
@@ -575,12 +579,12 @@ async def _print_instances(rm: RunManager) -> None:
     """以表格格式输出运行实例列表（pipeline_id / instance_id / status）。"""
     instances = await rm.list_instances()
     if not instances:
-        console.print("[dim]暂无运行实例。[/dim]")
+        console.print(f"[dim]{t('repl.info.empty_instances')}[/dim]")
         return
-    table = Table(box=box.SIMPLE, title="运行实例（Instances）")
-    table.add_column("pipeline_id")
-    table.add_column("instance_id", style="bold")
-    table.add_column("status", justify="center")
+    table = Table(box=box.SIMPLE, title=t("repl.table.instances"))
+    table.add_column(t("repl.col.pipeline_id"))
+    table.add_column(t("repl.col.instance_id"), style="bold")
+    table.add_column(t("repl.col.status"), justify="center")
     for inst in instances:
         table.add_row(inst["pipeline_id"], inst["instance_id"], _colorize(Status(inst["status"])))
     console.print(table)
@@ -590,17 +594,17 @@ def _print_runs(rm: RunManager) -> None:
     """以表格格式输出所有已知 run 的列表。"""
     runs = rm.list_runs()
     if not runs:
-        console.print("[dim]暂无 run 记录。[/dim]")
+        console.print(f"[dim]{t('repl.info.empty_runs')}[/dim]")
         return
-    table = Table(box=box.SIMPLE, title="Run 列表")
-    table.add_column("run_id", style="bold")
-    table.add_column("pipeline_id")
-    table.add_column("活跃", justify="center")
+    table = Table(box=box.SIMPLE, title=t("repl.table.runs"))
+    table.add_column(t("repl.col.run_id"), style="bold")
+    table.add_column(t("repl.col.pipeline_id"))
+    table.add_column(t("repl.col.active"), justify="center")
     for r in runs:
         table.add_row(
             r["run_id"],
             r["pipeline_id"],
-            "[green]是[/green]" if r["active"] else "[dim]否[/dim]",
+            t("repl.label.active_yes") if r["active"] else t("repl.label.active_no"),
         )
     console.print(table)
 
@@ -619,7 +623,8 @@ def _get_flag(args: list[str], flag: str) -> str | None:
         if value.startswith("--"):
             # 下一个 token 是另一个 flag，不是值
             console.print(
-                f"[yellow]警告:[/yellow] {flag} 缺少值（'{value}' 看起来是另一个选项）"
+                f"[yellow]{t('repl.label.warn')}:[/yellow] "
+                + t("repl.warn.flag_missing_value").format(flag=flag, value=value)
             )
             return None
         return value

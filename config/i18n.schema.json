@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnicad/i18n.schema.json",
+  "title": "OmniCAD Language Config",
+  "description": "Selects the active display language for the CLI. Set OMNICAD_LANG env var to override.",
+  "type": "object",
+  "required": ["language"],
+  "additionalProperties": false,
+  "properties": {
+    "language": {
+      "type": "string",
+      "description": "BCP 47-style locale code. A matching config/i18n/<language>.json translation file must exist.",
+      "examples": ["zh_CN", "en"]
+    }
+  }
+}

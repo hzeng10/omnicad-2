@@ -42,9 +42,14 @@ from typing import Optional
 
 import typer
 
+from pipeline_engine import i18n as _i18n
+
+_i18n.init()
+t = _i18n.t
+
 app = typer.Typer(
     name="omnicad",
-    help="OmniCAD — DAG-based CAD workflow orchestration engine.",
+    help=t("cli.app.help"),
     add_completion=False,
     no_args_is_help=False,
 )
@@ -54,7 +59,7 @@ _workspace_option = typer.Option(
     None,
     "--workspace",
     "-w",
-    help="工作目录（默认：当前目录）。",
+    help=t("cli.opts.workspace.help"),
     show_default=False,
 )
 
@@ -95,21 +100,21 @@ def _make_service(workspace: Path, ctx: typer.Context):
 
 # ─── app.callback ─────────────────────────────────────────────────────────────
 
-@app.callback(invoke_without_command=True)
+@app.callback(invoke_without_command=True, help=t("cli.main.help"))
 def main(
     ctx: typer.Context,
     workspace: Optional[Path] = _workspace_option,
     pipelines_dir: Optional[Path] = typer.Option(
         None,
         "--pipelines-dir",
-        help="Pipeline YAML 发现目录（默认 ./pipelines）。",
+        help=t("cli.opts.pipelines_dir.help"),
         envvar="PIPELINE_AUTOLOAD_DIR",
         show_default=False,
     ),
     no_autoload: bool = typer.Option(
         False,
         "--no-autoload",
-        help="禁用启动时自动加载 pipeline。",
+        help=t("cli.opts.no_autoload.help"),
         envvar="PIPELINE_NO_AUTOLOAD",
     ),
 ) -> None:
@@ -129,10 +134,10 @@ def main(
 
 # ─── load ─────────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.load.help"))
 def load(
     ctx: typer.Context,
-    paths: list[Path] = typer.Argument(..., help="要加载的 YAML pipeline 文件路径。"),
+    paths: list[Path] = typer.Argument(..., help=t("cli.cmds.load.paths.help")),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """解析、校验并注册一个或多个 pipeline YAML 文件。"""
@@ -149,7 +154,7 @@ def load(
                 "ok": False,
                 "command": "load",
                 **result,
-                "error": {"message": "一个或多个文件加载失败", "type": "LoadError"},
+                "error": {"message": t("cli.err.load_failed"), "type": "LoadError"},
             }
             typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
             raise typer.Exit(1)
@@ -159,10 +164,10 @@ def load(
 
 # ─── lint ─────────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.lint.help"))
 def lint(
     ctx: typer.Context,
-    path: Path = typer.Argument(..., help="要校验的 pipeline YAML 文件路径。"),
+    path: Path = typer.Argument(..., help=t("cli.cmds.lint.path.help")),
 ) -> None:
     """校验 pipeline YAML 语法与 DAG 合法性（不执行）。"""
     from pipeline_engine.cli_json import emit, emit_error
@@ -180,12 +185,12 @@ def lint(
 
 # ─── list ─────────────────────────────────────────────────────────────────────
 
-@app.command("list")
+@app.command("list", help=t("cli.cmds.list.help"))
 def list_cmd(
     ctx: typer.Context,
     workspace: Optional[Path] = _workspace_option,
-    pipeline_flag: bool = typer.Option(False, "--pipeline", help="列出已注册的 pipeline（默认行为）。"),
-    instance_flag: bool = typer.Option(False, "--instance", help="列出运行实例（pipeline_id / instance_id / status）。"),
+    pipeline_flag: bool = typer.Option(False, "--pipeline", help=t("cli.cmds.list.opt_pipeline.help")),
+    instance_flag: bool = typer.Option(False, "--instance", help=t("cli.cmds.list.opt_instance.help")),
 ) -> None:
     """列出已注册的 pipeline（默认）或运行实例（--instance）。"""
     from pipeline_engine.cli_json import emit, emit_error
@@ -210,13 +215,13 @@ def list_cmd(
 
 # ─── start ────────────────────────────────────────────────────────────────────
 
-@app.command("start")
+@app.command("start", help=t("cli.cmds.start.help"))
 def start_cmd(
     ctx: typer.Context,
-    pipeline_ids: list[str] = typer.Argument(..., help="要运行的 pipeline ID 列表。"),
+    pipeline_ids: list[str] = typer.Argument(..., help=t("cli.cmds.start.ids.help")),
     workspace: Optional[Path] = _workspace_option,
-    step: Optional[str] = typer.Option(None, "--step", "-s", help="仅运行指定 step。"),
-    task: Optional[str] = typer.Option(None, "--task", "-t", help="仅运行指定 task（需配合 --step）。"),
+    step: Optional[str] = typer.Option(None, "--step", "-s", help=t("cli.cmds.start.opt_step.help")),
+    task: Optional[str] = typer.Option(None, "--task", "-t", help=t("cli.cmds.start.opt_task.help")),
 ) -> None:
     """启动一个或多个 pipeline run，阻塞直到完成。"""
     from pipeline_engine.cli_json import emit
@@ -236,7 +241,7 @@ def start_cmd(
                 "ok": False,
                 "command": "start",
                 **result,
-                "error": {"message": "一个或多个 pipeline 启动失败", "type": "StartError"},
+                "error": {"message": t("cli.err.start_failed"), "type": "StartError"},
             }
             typer.echo(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
             raise typer.Exit(1)
@@ -248,10 +253,10 @@ def start_cmd(
 
 # ─── stop ─────────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.stop.help"))
 def stop(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要中止的 pipeline 实例 ID。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help=t("cli.cmds.stop.ref.help")),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """中止指定 pipeline 实例（整个 run）。"""
@@ -274,12 +279,12 @@ def stop(
 
 # ─── resume ───────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.resume.help"))
 def resume(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要恢复的 pipeline 实例 ID。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help=t("cli.cmds.resume.ref.help")),
     workspace: Optional[Path] = _workspace_option,
-    include_paused: bool = typer.Option(False, "--include-paused", help="同时恢复 PAUSED 状态的任务。"),
+    include_paused: bool = typer.Option(False, "--include-paused", help=t("cli.cmds.resume.opt_include_paused.help")),
 ) -> None:
     """恢复 FAILED（或 PAUSED）的 pipeline 实例，并等待其完成。"""
     from pipeline_engine.cli_json import emit, emit_error
@@ -301,14 +306,14 @@ def resume(
 
 # ─── fix ──────────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.fix.help"))
 def fix(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要修复的 pipeline 实例 ID。"),
-    task_locator: str = typer.Option(..., "--task", "-t", help="目标 task（格式：step_id/task_id 或 task_id）。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help=t("cli.cmds.fix.ref.help")),
+    task_locator: str = typer.Option(..., "--task", "-t", help=t("cli.cmds.fix.opt_task.help")),
     workspace: Optional[Path] = _workspace_option,
-    output_path: Optional[Path] = typer.Option(None, "--output", help="注入 output.json 路径（任务状态转为 FIXED）。"),
-    input_path: Optional[Path] = typer.Option(None, "--input", help="注入 input.json 路径（任务状态重置为 NEW）。"),
+    output_path: Optional[Path] = typer.Option(None, "--output", help=t("cli.cmds.fix.opt_output.help")),
+    input_path: Optional[Path] = typer.Option(None, "--input", help=t("cli.cmds.fix.opt_input.help")),
 ) -> None:
     """向 pipeline 实例中的失败任务注入 output（FIXED）或替换 input（NEW）。"""
     from pipeline_engine.cli_json import emit, emit_error
@@ -330,10 +335,10 @@ def fix(
 
 # ─── status ───────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.status.help"))
 def status(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要查看状态的 pipeline 实例 ID。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help=t("cli.cmds.status.ref.help")),
     workspace: Optional[Path] = _workspace_option,
 ) -> None:
     """查看指定 pipeline 实例的整体状态与进度（JSON 输出）。"""
@@ -356,13 +361,13 @@ def status(
 
 # ─── inspect ──────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.inspect.help"))
 def inspect(
     ctx: typer.Context,
-    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help="要查看的 pipeline 实例 ID。"),
+    ref: str = typer.Argument(..., metavar="INSTANCE_ID", help=t("cli.cmds.inspect.ref.help")),
     workspace: Optional[Path] = _workspace_option,
-    step: Optional[str] = typer.Option(None, "--step", "-s", help="指定要查看的 step ID。"),
-    task: Optional[str] = typer.Option(None, "--task", "-t", help="指定要查看的 task ID（需配合 --step）。"),
+    step: Optional[str] = typer.Option(None, "--step", "-s", help=t("cli.cmds.inspect.opt_step.help")),
+    task: Optional[str] = typer.Option(None, "--task", "-t", help=t("cli.cmds.inspect.opt_task.help")),
 ) -> None:
     """查看 pipeline 实例中 task 的详细信息（输入/输出/日志/堆栈）。"""
     from pipeline_engine.cli_json import emit, emit_error
@@ -384,15 +389,15 @@ def inspect(
 
 # ─── log ──────────────────────────────────────────────────────────────────────
 
-@app.command("log")
+@app.command("log", help=t("cli.cmds.log.help"))
 def log_cmd(
     ctx: typer.Context,
     ref: str = typer.Argument(..., metavar="INSTANCE_ID"),
     workspace: Optional[Path] = _workspace_option,
-    tail: int = typer.Option(100, "--tail", help="显示最后 N 行（默认 100）。"),
-    offset: int = typer.Option(0, "--offset", help="从末尾倒数第 N 行起开始显示。"),
-    all_: bool = typer.Option(False, "--all", help="显示全部行。"),
-    errors_only: bool = typer.Option(False, "--errors-only", help="仅显示 ERROR 行。"),
+    tail: int = typer.Option(100, "--tail", help=t("cli.cmds.log.opt_tail.help")),
+    offset: int = typer.Option(0, "--offset", help=t("cli.cmds.log.opt_offset.help")),
+    all_: bool = typer.Option(False, "--all", help=t("cli.cmds.log.opt_all.help")),
+    errors_only: bool = typer.Option(False, "--errors-only", help=t("cli.cmds.log.opt_errors_only.help")),
 ) -> None:
     """查看指定 pipeline 实例的 run.log（JSON 格式，含结构化行记录）。"""
     from pipeline_engine.cli_json import emit, emit_error
@@ -416,12 +421,12 @@ def log_cmd(
 
 # ─── serve ────────────────────────────────────────────────────────────────────
 
-@app.command()
+@app.command(help=t("cli.cmds.serve.help"))
 def serve(
     ctx: typer.Context,
     workspace: Optional[Path] = _workspace_option,
-    host: str = typer.Option("127.0.0.1", "--host", help="绑定地址（默认 127.0.0.1）。"),
-    port: int = typer.Option(8765, "--port", "-p", help="监听端口（默认 8765）。"),
+    host: str = typer.Option("127.0.0.1", "--host", help=t("cli.cmds.serve.opt_host.help")),
+    port: int = typer.Option(8765, "--port", "-p", help=t("cli.cmds.serve.opt_port.help")),
 ) -> None:
     """以 HTTP REST API 方式启动 pipeline engine 服务（127.0.0.1 本机绑定，无鉴权）。
 
@@ -431,10 +436,7 @@ def serve(
         import uvicorn
         from pipeline_engine.api import create_app
     except ImportError:
-        typer.echo(
-            "错误：HTTP API 依赖未安装。请运行：pip install pipeline_engine[api]",
-            err=True,
-        )
+        typer.echo(t("cli.err.serve_deps_missing"), err=True)
         raise typer.Exit(1)
 
     from pipeline_engine.core.run_manager import RunManager
@@ -454,7 +456,7 @@ def serve(
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         typer.echo(
-            f"错误：workspace '{ws}' 已被另一个 serve 进程占用（{lock_path}）。",
+            t("cli.err.serve_lock_conflict").format(ws=ws, lock_path=lock_path),
             err=True,
         )
         raise typer.Exit(1)

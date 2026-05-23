@@ -227,6 +227,29 @@ CLI 名称、REPL 提示符、启动 Logo、版本号、副标题统一由 `conf
 
 详见 design.md §6.16。
 
+### 3.6 多语言支持 (i18n)
+
+CLI 所有用户可见字符串（命令帮助、REPL 提示、状态标签、错误消息）均通过 `pipeline_engine/i18n.py` 的 `t("key")` 函数提供，支持运行时语言切换，无需重新构建。
+
+**语言解析优先级（高→低）**：
+
+1. `OMNICAD_LANG` 环境变量
+2. `config/i18n.json` 配置文件 `{"language": "..."}` 
+3. 系统 locale 自动探测（`zh_*` → `zh_CN`，`en_*` → `en`）
+4. 硬编码后备：`zh_CN`
+
+**横幅 / API 作用域说明**：
+
+| 内容 | 是否受 i18n 影响 |
+|---|---|
+| CLI `--help` 文本、REPL 提示符、状态标签 | ✓ 受语言设置影响 |
+| `config/branding.json` 品牌字段（用户自定义） | ✗ 由用户自行管理 |
+| JSON 响应信封（`ok`、`command` 等字段名） | ✗ 固定为 English（程序化接口，不面向自然语言） |
+
+**扩展点**：在 `config/i18n/` 目录下新建 `<locale>.json` 平铺键值文件，无需修改任何代码。缺失键自动回退 `zh_CN.json`。
+
+当前支持：`zh_CN`（默认）、`en`。详见 design.md §6.17。
+
 ---
 
 ## 3. 技术实现建议
